@@ -16,7 +16,7 @@ use windows::core::{Interface, PCWSTR, w};
 
 pub const APP_NAME: &str = "SnapForge";
 pub const REPO_URL: &str = "https://github.com/ahsoggg-creator/snapforge";
-const UNINSTALL_PARENT: &str = "Software\Microsoft\Windows\CurrentVersion\Uninstall";
+const UNINSTALL_PARENT: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
 /// Sub-key name of the "Apps & features" entry (a test overrides it so a real installation is never touched).
@@ -25,7 +25,7 @@ fn uninstall_name() -> String {
 }
 
 fn uninstall_key() -> String {
-    format!("{UNINSTALL_PARENT}\{}", uninstall_name())
+    format!(r"{UNINSTALL_PARENT}\{}", uninstall_name())
 }
 
 fn wide(s: &str) -> Vec<u16> {
