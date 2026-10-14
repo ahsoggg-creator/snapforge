@@ -1,0 +1,7 @@
+target/
+dist/
+# private keys must never be committed
+*.pfx
+*.p12
+*.snk
+.env

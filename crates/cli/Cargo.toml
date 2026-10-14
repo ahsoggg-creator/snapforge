@@ -1,0 +1,12 @@
+[package]
+name = "snapforge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "snapforge-cli"
+path = "src/main.rs"
+
+[dependencies]
