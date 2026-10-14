@@ -76,6 +76,9 @@ pub struct Monitor {
     pub rect: Rect,
     pub dpi: u32,
     pub primary: bool,
+    /// Native monitor handle (HMONITOR) for the capture backends; 0 when unknown.
+    #[serde(skip)]
+    pub handle: isize,
 }
 
 impl Monitor {
@@ -143,6 +146,7 @@ mod tests {
             rect: Rect::new(x, y, w, h),
             dpi,
             primary,
+            handle: 0,
         }
     }
 
