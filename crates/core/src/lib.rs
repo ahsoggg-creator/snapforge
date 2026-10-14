@@ -4,12 +4,18 @@
 pub mod capture;
 pub mod diag;
 pub mod editor;
+pub mod face;
 pub mod geometry;
 pub mod history;
 pub mod hotkey;
+pub mod imageops;
 pub mod naming;
+pub mod net;
+#[cfg(windows)]
+pub mod ocr;
 pub mod output;
 pub mod paths;
+pub mod sensitive;
 pub mod settings;
 
 pub use image;
