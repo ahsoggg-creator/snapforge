@@ -140,12 +140,15 @@ macro_rules! sf_error {
     ($($a:tt)*) => { $crate::diag::log($crate::diag::Level::Error, &format!($($a)*)) };
 }
 
+/// The secret list and the sink are process-wide; tests anywhere in the crate that touch them take this lock.
+#[cfg(test)]
+pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The secret list and the sink are process-wide; tests that touch them run one at a time.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use super::TEST_SERIAL as SERIAL;
 
     #[test]
     fn registered_secret_is_removed() {
