@@ -11,8 +11,9 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -57,12 +58,18 @@ impl Wgc {
                 Some(&mut ctx),
             )
             .map_err(|x| e("D3D11CreateDevice", x))?;
-            let (device, ctx) = device.zip(ctx).ok_or_else(|| CaptureError::Backend("WGC: no D3D device".into()))?;
+            let (device, ctx) = device
+                .zip(ctx)
+                .ok_or_else(|| CaptureError::Backend("WGC: no D3D device".into()))?;
             let dxgi: IDXGIDevice = device.cast().map_err(|x| e("IDXGIDevice", x))?;
             let inspectable: IInspectable =
                 CreateDirect3D11DeviceFromDXGIDevice(&dxgi).map_err(|x| e("CreateDirect3D11Device", x))?;
             let winrt_device: IDirect3DDevice = inspectable.cast().map_err(|x| e("IDirect3DDevice", x))?;
-            Ok(Wgc { device, ctx, winrt_device })
+            Ok(Wgc {
+                device,
+                ctx,
+                winrt_device,
+            })
         }
     }
 
@@ -71,8 +78,8 @@ impl Wgc {
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|x| e("capture item factory", x))?;
         // SAFETY: `handle` comes from EnumDisplayMonitors.
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(HMONITOR(handle as *mut _)) }
-            .map_err(|x| e("CreateForMonitor", x))?;
+        let item: GraphicsCaptureItem =
+            unsafe { interop.CreateForMonitor(HMONITOR(handle as *mut _)) }.map_err(|x| e("CreateForMonitor", x))?;
         let size = item.Size().map_err(|x| e("item size", x))?;
 
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -131,7 +138,8 @@ impl Wgc {
             self.device
                 .CreateTexture2D(&desc, None, Some(&mut staging))
                 .map_err(|x| e("staging texture", x))?;
-            let staging: ID3D11Texture2D = staging.ok_or_else(|| CaptureError::Backend("WGC: no staging texture".into()))?;
+            let staging: ID3D11Texture2D =
+                staging.ok_or_else(|| CaptureError::Backend("WGC: no staging texture".into()))?;
             self.ctx.CopyResource(&staging, &tex);
 
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
@@ -141,7 +149,10 @@ impl Wgc {
             let (w, h) = (desc.Width.min(want_w.max(1)), desc.Height.min(want_h.max(1)));
             let mut out = vec![0u8; w as usize * h as usize * 4];
             for y in 0..h as usize {
-                let src = std::slice::from_raw_parts((mapped.pData as *const u8).add(y * mapped.RowPitch as usize), w as usize * 4);
+                let src = std::slice::from_raw_parts(
+                    (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
+                    w as usize * 4,
+                );
                 let dst = &mut out[y * w as usize * 4..(y + 1) * w as usize * 4];
                 for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
                     d[0] = s[2];

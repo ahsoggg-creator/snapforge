@@ -16,7 +16,9 @@ static FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
 fn font() -> Option<&'static FontArc> {
     FONT.get_or_init(|| {
-        let win = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+        let win = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
         let mut candidates: Vec<PathBuf> = ["segoeui.ttf", "arial.ttf", "tahoma.ttf", "calibri.ttf"]
             .iter()
             .map(|f| win.join("Fonts").join(f))
@@ -106,7 +108,7 @@ fn from_pixmap(pm: &Pixmap) -> RgbaImage {
 /// Renders `objects` (in order) over `base`.
 pub fn render(base: &RgbaImage, objects: &[Object]) -> RgbaImage {
     let mut pm = to_pixmap(base);
-    for o in objects {
+    for o in objects.iter().filter(|o| o.visible) {
         draw_object(&mut pm, o);
     }
     from_pixmap(&pm)
@@ -155,13 +157,13 @@ fn draw_object(pm: &mut Pixmap, o: &Object) {
         }
         Shape::Ellipse { a, b, fill } => {
             let (lo, hi) = norm_rect(*a, *b);
-            if let Some(r) = tiny_skia::Rect::from_ltrb(lo.x, lo.y, hi.x.max(lo.x + 0.5), hi.y.max(lo.y + 0.5)) {
-                if let Some(path) = PathBuilder::from_oval(r) {
-                    if *fill {
-                        pm.fill_path(&path, &paint(o.color), FillRule::Winding, id, None);
-                    } else {
-                        pm.stroke_path(&path, &paint(o.color), &stroke(o.width, LineCap::Butt), id, None);
-                    }
+            if let Some(r) = tiny_skia::Rect::from_ltrb(lo.x, lo.y, hi.x.max(lo.x + 0.5), hi.y.max(lo.y + 0.5))
+                && let Some(path) = PathBuilder::from_oval(r)
+            {
+                if *fill {
+                    pm.fill_path(&path, &paint(o.color), FillRule::Winding, id, None);
+                } else {
+                    pm.stroke_path(&path, &paint(o.color), &stroke(o.width, LineCap::Butt), id, None);
                 }
             }
         }
@@ -196,7 +198,11 @@ fn draw_object(pm: &mut Pixmap, o: &Object) {
                 pm.stroke_path(&p, &paint(ring), &stroke((r * 0.12).max(1.5), LineCap::Butt), id, None);
             }
             let lum = 0.299 * o.color[0] as f32 + 0.587 * o.color[1] as f32 + 0.114 * o.color[2] as f32;
-            let ink = if lum > 150.0 { [20, 20, 20, 255] } else { [255, 255, 255, 255] };
+            let ink = if lum > 150.0 {
+                [20, 20, 20, 255]
+            } else {
+                [255, 255, 255, 255]
+            };
             let label = n.to_string();
             let size = r * 1.15;
             let (tw, th) = measure_text(&label, size);
@@ -220,7 +226,13 @@ fn draw_arrow(pm: &mut Pixmap, a: Pt, b: Pt, o: &Object) {
     // end the shaft inside the head so the join has no gap
     shaft.line_to(base.x + ux * head * 0.3, base.y + uy * head * 0.3);
     if let Some(p) = shaft.finish() {
-        pm.stroke_path(&p, &paint(o.color), &stroke(o.width, LineCap::Round), Transform::identity(), None);
+        pm.stroke_path(
+            &p,
+            &paint(o.color),
+            &stroke(o.width, LineCap::Round),
+            Transform::identity(),
+            None,
+        );
     }
     let mut tri = PathBuilder::new();
     tri.move_to(b.x, b.y);
@@ -285,7 +297,9 @@ fn clamp_region(pm: &Pixmap, lo: Pt, hi: Pt) -> Option<(usize, usize, usize, usi
 
 /// Three box-blur passes (≈ Gaussian) over the region; edges are clamped to the region.
 pub fn blur_region(pm: &mut Pixmap, lo: Pt, hi: Pt, radius: u32) {
-    let Some((x0, y0, x1, y1)) = clamp_region(pm, lo, hi) else { return };
+    let Some((x0, y0, x1, y1)) = clamp_region(pm, lo, hi) else {
+        return;
+    };
     let stride = pm.width() as usize * 4;
     let (rw, rh) = (x1 - x0, y1 - y0);
     let r = (radius.max(1) as usize).min(rw.max(rh));
@@ -308,7 +322,13 @@ pub fn blur_region(pm: &mut Pixmap, lo: Pt, hi: Pt, radius: u32) {
 
 fn box_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, horizontal: bool) {
     let (lines, len) = if horizontal { (h, w) } else { (w, h) };
-    let idx = |line: usize, i: usize| if horizontal { (line * w + i) * 4 } else { (i * w + line) * 4 };
+    let idx = |line: usize, i: usize| {
+        if horizontal {
+            (line * w + i) * 4
+        } else {
+            (i * w + line) * 4
+        }
+    };
     let win = (2 * r + 1) as u32;
     for line in 0..lines {
         let mut sum = [0u32; 4];
@@ -334,7 +354,9 @@ fn box_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, horizontal
 
 /// Replaces each `block`×`block` cell of the region with its average colour.
 pub fn pixelate_region(pm: &mut Pixmap, lo: Pt, hi: Pt, block: u32) {
-    let Some((x0, y0, x1, y1)) = clamp_region(pm, lo, hi) else { return };
+    let Some((x0, y0, x1, y1)) = clamp_region(pm, lo, hi) else {
+        return;
+    };
     let b = block.max(2) as usize;
     let stride = pm.width() as usize * 4;
     let data = pm.data_mut();
@@ -391,7 +413,13 @@ mod tests {
     }
 
     fn obj(shape: Shape, color: Color, width: f32) -> Object {
-        Object { id: 1, shape, color, width }
+        Object {
+            id: 1,
+            shape,
+            color,
+            width,
+            visible: true,
+        }
     }
 
     #[test]
@@ -402,7 +430,15 @@ mod tests {
 
     #[test]
     fn filled_rect_colours_exactly_its_area() {
-        let r = obj(Shape::Rect { a: Pt::new(10.0, 10.0), b: Pt::new(30.0, 20.0), fill: true }, [0, 0, 255, 255], 2.0);
+        let r = obj(
+            Shape::Rect {
+                a: Pt::new(10.0, 10.0),
+                b: Pt::new(30.0, 20.0),
+                fill: true,
+            },
+            [0, 0, 255, 255],
+            2.0,
+        );
         let out = render(&white(50, 40), &[r]);
         assert_eq!(out.get_pixel(15, 15).0, [0, 0, 255, 255]);
         assert_eq!(out.get_pixel(5, 5).0, [255, 255, 255, 255]);
@@ -411,15 +447,34 @@ mod tests {
 
     #[test]
     fn hollow_ellipse_keeps_the_centre() {
-        let e = obj(Shape::Ellipse { a: Pt::new(5.0, 5.0), b: Pt::new(45.0, 35.0), fill: false }, [255, 0, 0, 255], 3.0);
+        let e = obj(
+            Shape::Ellipse {
+                a: Pt::new(5.0, 5.0),
+                b: Pt::new(45.0, 35.0),
+                fill: false,
+            },
+            [255, 0, 0, 255],
+            3.0,
+        );
         let out = render(&white(50, 40), &[e]);
         assert_eq!(out.get_pixel(25, 20).0, [255, 255, 255, 255], "centre untouched");
-        assert_ne!(out.get_pixel(25, 5).0, [255, 255, 255, 255], "top of the outline is drawn");
+        assert_ne!(
+            out.get_pixel(25, 5).0,
+            [255, 255, 255, 255],
+            "top of the outline is drawn"
+        );
     }
 
     #[test]
     fn arrow_draws_head_at_the_tip() {
-        let a = obj(Shape::Arrow { a: Pt::new(5.0, 20.0), b: Pt::new(55.0, 20.0) }, [0, 0, 0, 255], 4.0);
+        let a = obj(
+            Shape::Arrow {
+                a: Pt::new(5.0, 20.0),
+                b: Pt::new(55.0, 20.0),
+            },
+            [0, 0, 0, 255],
+            4.0,
+        );
         let out = render(&white(60, 40), &[a]);
         assert_eq!(out.get_pixel(30, 20).0, [0, 0, 0, 255], "shaft");
         // the head is wider than the shaft near the tip
@@ -428,7 +483,13 @@ mod tests {
 
     #[test]
     fn marker_is_translucent() {
-        let m = obj(Shape::Marker { pts: vec![Pt::new(5.0, 10.0), Pt::new(45.0, 10.0)] }, [255, 255, 0, 255], 4.0);
+        let m = obj(
+            Shape::Marker {
+                pts: vec![Pt::new(5.0, 10.0), Pt::new(45.0, 10.0)],
+            },
+            [255, 255, 0, 255],
+            4.0,
+        );
         let out = render(&white(50, 20), &[m]);
         let p = out.get_pixel(25, 10).0;
         assert_eq!(p[0], 255);
@@ -443,7 +504,15 @@ mod tests {
                 img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
             }
         }
-        let p = obj(Shape::Pixelate { a: Pt::new(0.0, 0.0), b: Pt::new(8.0, 8.0), block: 8 }, DEFAULT_COLOR, 1.0);
+        let p = obj(
+            Shape::Pixelate {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(8.0, 8.0),
+                block: 8,
+            },
+            DEFAULT_COLOR,
+            1.0,
+        );
         let out = render(&img, &[p]);
         let v = out.get_pixel(0, 0).0[0];
         assert!((126..=128).contains(&v), "average of black and white halves: {v}");
@@ -458,7 +527,15 @@ mod tests {
                 img.put_pixel(x, y, Rgba([0, 0, 0, 255]));
             }
         }
-        let b = obj(Shape::Blur { a: Pt::new(10.0, 0.0), b: Pt::new(30.0, 10.0), radius: 4 }, DEFAULT_COLOR, 1.0);
+        let b = obj(
+            Shape::Blur {
+                a: Pt::new(10.0, 0.0),
+                b: Pt::new(30.0, 10.0),
+                radius: 4,
+            },
+            DEFAULT_COLOR,
+            1.0,
+        );
         let out = render(&img, &[b]);
         let edge = out.get_pixel(20, 5).0[0];
         assert!(edge > 20 && edge < 235, "edge is smoothed: {edge}");
@@ -476,7 +553,15 @@ mod tests {
                 img.put_pixel(x, y, Rgba([v, v, v, 255]));
             }
         }
-        let b = obj(Shape::Blur { a: Pt::new(0.0, 0.0), b: Pt::new(32.0, 32.0), radius: 3 }, DEFAULT_COLOR, 1.0);
+        let b = obj(
+            Shape::Blur {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(32.0, 32.0),
+                radius: 3,
+            },
+            DEFAULT_COLOR,
+            1.0,
+        );
         let out = render(&img, &[b]);
         let vals: Vec<u8> = (8..24).map(|x| out.get_pixel(x, 16).0[0]).collect();
         let spread = vals.iter().max().unwrap() - vals.iter().min().unwrap();
@@ -485,9 +570,20 @@ mod tests {
 
     #[test]
     fn step_badge_is_drawn_with_a_number() {
-        let s = obj(Shape::Step { at: Pt::new(30.0, 30.0), n: 7 }, [200, 30, 30, 255], 4.0);
+        let s = obj(
+            Shape::Step {
+                at: Pt::new(30.0, 30.0),
+                n: 7,
+            },
+            [200, 30, 30, 255],
+            4.0,
+        );
         let out = render(&white(60, 60), &[s]);
-        assert_eq!(out.get_pixel(30 - 15, 30).0[..3], [200, 30, 30], "badge colour near its edge");
+        assert_eq!(
+            out.get_pixel(30 - 15, 30).0[..3],
+            [200, 30, 30],
+            "badge colour near its edge"
+        );
         assert_eq!(out.get_pixel(2, 2).0, [255, 255, 255, 255]);
         if has_font() {
             // the badge is red (green channel 30); the white label lights some pixels up
@@ -501,7 +597,15 @@ mod tests {
         if !has_font() {
             return;
         }
-        let t = obj(Shape::Text { at: Pt::new(4.0, 4.0), text: "Hello".into(), size: 24.0 }, [0, 0, 0, 255], 1.0);
+        let t = obj(
+            Shape::Text {
+                at: Pt::new(4.0, 4.0),
+                text: "Hello".into(),
+                size: 24.0,
+            },
+            [0, 0, 0, 255],
+            1.0,
+        );
         let out = render(&white(120, 50), &[t]);
         assert!(out.pixels().any(|p| p.0[0] < 100), "dark glyph pixels exist");
         let (w, h) = measure_text("Hello", 24.0);
@@ -514,7 +618,15 @@ mod tests {
     fn objects_remain_vector_until_render() {
         // moving an object after the fact changes the render without any accumulated raster damage
         let mut d = Document::new(white(40, 40));
-        let id = d.add(Shape::Rect { a: Pt::new(0.0, 0.0), b: Pt::new(10.0, 10.0), fill: true }, [0, 0, 0, 255], 2.0);
+        let id = d.add(
+            Shape::Rect {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(10.0, 10.0),
+                fill: true,
+            },
+            [0, 0, 0, 255],
+            2.0,
+        );
         assert_eq!(d.render().get_pixel(5, 5).0[0], 0);
         d.get_mut(id).unwrap().shape.translate(20.0, 20.0);
         let out = d.render();

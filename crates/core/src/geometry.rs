@@ -35,7 +35,11 @@ impl Rect {
     }
 
     pub fn area(&self) -> i64 {
-        if self.is_empty() { 0 } else { self.w as i64 * self.h as i64 }
+        if self.is_empty() {
+            0
+        } else {
+            self.w as i64 * self.h as i64
+        }
     }
 
     pub fn contains(&self, px: i32, py: i32) -> bool {
@@ -94,7 +98,10 @@ impl Monitor {
     /// Monitor-local logical point -> physical point of the virtual desktop.
     pub fn logical_to_virtual(&self, lx: f64, ly: f64) -> (i32, i32) {
         let s = self.scale();
-        (self.rect.x + (lx * s).round() as i32, self.rect.y + (ly * s).round() as i32)
+        (
+            self.rect.x + (lx * s).round() as i32,
+            self.rect.y + (ly * s).round() as i32,
+        )
     }
 
     /// Physical point of the virtual desktop -> monitor-local logical point.

@@ -11,7 +11,11 @@ use snapforge_core::settings::Settings;
 use snapforge_core::{naming, output, paths};
 
 #[derive(Parser)]
-#[command(name = "snapforge-cli", version, about = "SnapForge from the console: capture, history")]
+#[command(
+    name = "snapforge-cli",
+    version,
+    about = "SnapForge from the console: capture, history"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -140,8 +144,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
                 None => {
                     let stem = naming::expand(&settings.name_template, &app, chrono::Local::now().naive_local());
-                    output::save_to_dir(&shot.image, &settings.save_dir, &stem, settings.format, settings.jpeg_quality)
-                        .map_err(|e| e.to_string())?
+                    output::save_to_dir(
+                        &shot.image,
+                        &settings.save_dir,
+                        &stem,
+                        settings.format,
+                        settings.jpeg_quality,
+                    )
+                    .map_err(|e| e.to_string())?
                 }
             };
             if a.history {
@@ -157,7 +167,14 @@ fn run(cli: Cli) -> Result<(), String> {
             match cmd {
                 HistoryCmd::List { query } => {
                     for e in h.search(query.as_deref().unwrap_or("")) {
-                        println!("{}  {}x{}  {}  {}", history::date_string(e.created), e.width, e.height, e.app, e.id);
+                        println!(
+                            "{}  {}x{}  {}  {}",
+                            history::date_string(e.created),
+                            e.width,
+                            e.height,
+                            e.app,
+                            e.id
+                        );
                     }
                 }
                 HistoryCmd::Clear => println!("deleted {}", h.clear().map_err(|e| e.to_string())?),

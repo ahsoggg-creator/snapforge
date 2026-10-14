@@ -1,4 +1,5 @@
 //! SnapForge core: capture, editor model, history, post-capture pipeline and plugins. No UI.
+#![allow(clippy::chunks_exact_to_as_chunks)]
 
 pub mod capture;
 pub mod diag;

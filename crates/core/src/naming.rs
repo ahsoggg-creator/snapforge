@@ -34,7 +34,7 @@ pub fn sanitize(name: &str) -> String {
     s = s.trim_matches(|c: char| c == '.' || c == ' ').to_owned();
     if s.chars().count() > MAX_STEM {
         s = s.chars().take(MAX_STEM).collect();
-        s = s.trim_end_matches(|c: char| c == '.' || c == ' ').to_owned();
+        s = s.trim_end_matches(['.', ' ']).to_owned();
     }
     let head = s.split('.').next().unwrap_or("").to_ascii_uppercase();
     if RESERVED.contains(&head.as_str()) {

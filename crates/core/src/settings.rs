@@ -146,9 +146,11 @@ mod tests {
     #[test]
     fn roundtrip() {
         let p = tmp("rt");
-        let mut s = Settings::default();
-        s.language = Lang::En;
-        s.delay_ms = 1500;
+        let s = Settings {
+            language: Lang::En,
+            delay_ms: 1500,
+            ..Settings::default()
+        };
         s.save_to(&p).unwrap();
         assert_eq!(Settings::load_from(&p), s);
     }

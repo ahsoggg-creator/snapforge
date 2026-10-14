@@ -2,8 +2,8 @@
 
 use image::RgbaImage;
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, ICONINFO,
@@ -30,24 +30,44 @@ pub fn grab(rect: Rect, cursor: bool) -> Result<RgbaImage, CaptureError> {
         let mem = CreateCompatibleDC(Some(screen));
         let bmp = CreateCompatibleBitmap(screen, rect.w, rect.h);
         let old = SelectObject(mem, bmp.into());
-        let blit = BitBlt(mem, 0, 0, rect.w, rect.h, Some(screen), rect.x, rect.y, SRCCOPY | CAPTUREBLT);
+        let blit = BitBlt(
+            mem,
+            0,
+            0,
+            rect.w,
+            rect.h,
+            Some(screen),
+            rect.x,
+            rect.y,
+            SRCCOPY | CAPTUREBLT,
+        );
 
         if cursor {
             draw_cursor(mem, rect);
         }
 
-        let mut bi = BITMAPINFO::default();
-        bi.bmiHeader = BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: rect.w,
-            biHeight: -rect.h, // top-down
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: rect.w,
+                biHeight: -rect.h, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut buf = vec![0u8; rect.w as usize * rect.h as usize * 4];
-        let lines = GetDIBits(mem, bmp, 0, rect.h as u32, Some(buf.as_mut_ptr().cast()), &mut bi, DIB_RGB_COLORS);
+        let lines = GetDIBits(
+            mem,
+            bmp,
+            0,
+            rect.h as u32,
+            Some(buf.as_mut_ptr().cast()),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
 
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());

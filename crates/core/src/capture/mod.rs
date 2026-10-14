@@ -67,7 +67,9 @@ pub fn capture_rect(rect: Rect, opts: CaptureOptions) -> Result<Capture, Capture
 
 #[cfg(windows)]
 pub fn capture_rect_on(monitors: &[Monitor], rect: Rect, opts: CaptureOptions) -> Result<Capture, CaptureError> {
-    let rect = rect.intersect(&virtual_bounds(monitors)).ok_or(CaptureError::OutsideScreen)?;
+    let rect = rect
+        .intersect(&virtual_bounds(monitors))
+        .ok_or(CaptureError::OutsideScreen)?;
     let pieces = split_by_monitors(monitors, &rect);
     if pieces.is_empty() {
         return Err(CaptureError::OutsideScreen);
@@ -76,13 +78,15 @@ pub fn capture_rect_on(monitors: &[Monitor], rect: Rect, opts: CaptureOptions) -
     let mut used = Backend::Gdi;
     let mut parts = Vec::new();
     for (mon, piece) in pieces {
-        let via_wgc = wgc.as_ref().and_then(|w| match w.grab_monitor(mon.handle, opts.cursor) {
-            Ok(frame) => Some(crop_piece(&frame, mon.rect, piece)),
-            Err(e) => {
-                crate::sf_warn!("WGC failed on {} ({e}); falling back to GDI", mon.name);
-                None
-            }
-        });
+        let via_wgc = wgc
+            .as_ref()
+            .and_then(|w| match w.grab_monitor(mon.handle, opts.cursor) {
+                Ok(frame) => Some(crop_piece(&frame, mon.rect, piece)),
+                Err(e) => {
+                    crate::sf_warn!("WGC failed on {} ({e}); falling back to GDI", mon.name);
+                    None
+                }
+            });
         let img = match via_wgc {
             Some(i) => {
                 used = Backend::Wgc;
@@ -197,14 +201,32 @@ mod tests {
         sys::enable_dpi_awareness();
         let monitors = sys::monitors();
         let m = &monitors[0];
-        let gdi = capture_rect(m.rect, CaptureOptions { cursor: false, force_gdi: true }).unwrap();
+        let gdi = capture_rect(
+            m.rect,
+            CaptureOptions {
+                cursor: false,
+                force_gdi: true,
+            },
+        )
+        .unwrap();
         assert_eq!(gdi.backend, Backend::Gdi);
         assert_eq!(gdi.image.dimensions(), (m.rect.w as u32, m.rect.h as u32));
         let auto = capture_rect(m.rect, CaptureOptions::default()).expect("capture must succeed through some backend");
-        eprintln!("backend used: {:?}, {:?} px, monitors: {}", auto.backend, auto.image.dimensions(), monitors.len());
+        eprintln!(
+            "backend used: {:?}, {:?} px, monitors: {}",
+            auto.backend,
+            auto.image.dimensions(),
+            monitors.len()
+        );
         assert_eq!(auto.image.dimensions(), gdi.image.dimensions());
         // a live desktop changes between grabs, so only check that real pixels came back
-        assert!(auto.image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "capture is not all black");
-        assert!(gdi.image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "GDI capture is not all black");
+        assert!(
+            auto.image.pixels().any(|p| p.0[..3] != [0, 0, 0]),
+            "capture is not all black"
+        );
+        assert!(
+            gdi.image.pixels().any(|p| p.0[..3] != [0, 0, 0]),
+            "GDI capture is not all black"
+        );
     }
 }

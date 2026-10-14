@@ -7,14 +7,15 @@
 
 use std::ffi::c_void;
 
+use snapforge_core::RgbaImage;
 use snapforge_core::capture::sys::WindowInfo;
 use snapforge_core::geometry::Rect;
-use snapforge_core::RgbaImage;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT,
+    VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
@@ -109,7 +110,15 @@ pub fn run(req: Request) -> Option<Rect> {
         )
         .ok()?;
         // creating across monitors with different DPI can make Windows rescale the rectangle: set it explicitly
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), req.origin.0, req.origin.1, w, h, SWP_SHOWWINDOW);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            req.origin.0,
+            req.origin.1,
+            w,
+            h,
+            SWP_SHOWWINDOW,
+        );
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
         if let Some((x, y)) = snapforge_core::capture::sys::cursor_pos() {
@@ -458,7 +467,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         st.drag = None;
                     }
                     Mode::Window => {
-                        st.result = st.hovered_window().and_then(|r| r.intersect(&Rect::new(0, 0, st.w, st.h)));
+                        st.result = st
+                            .hovered_window()
+                            .and_then(|r| r.intersect(&Rect::new(0, 0, st.w, st.h)));
                         if st.result.is_some() {
                             let _ = DestroyWindow(hwnd);
                         }

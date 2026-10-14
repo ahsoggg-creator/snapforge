@@ -7,10 +7,12 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, IPersistFile,
 };
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW,
-    RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
-use windows::Win32::UI::Shell::{IShellLinkW, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, ShellExecuteW, ShellLink};
+use windows::Win32::UI::Shell::{
+    IShellLinkW, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, ShellExecuteW, ShellLink,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{Interface, PCWSTR, w};
 
@@ -110,7 +112,11 @@ fn create_key(path: &str) -> Result<Key, String> {
             None,
         )
     };
-    if r.is_err() { Err(format!("registry: cannot create HKCU\\{path} ({r:?})")) } else { Ok(Key(h)) }
+    if r.is_err() {
+        Err(format!("registry: cannot create HKCU\\{path} ({r:?})"))
+    } else {
+        Ok(Key(h))
+    }
 }
 
 fn set_str(k: &Key, name: &str, value: &str) -> Result<(), String> {
@@ -118,14 +124,22 @@ fn set_str(k: &Key, name: &str, value: &str) -> Result<(), String> {
     let v: Vec<u8> = wide(value).iter().flat_map(|c| c.to_le_bytes()).collect();
     // SAFETY: buffers outlive the call.
     let r = unsafe { RegSetValueExW(k.0, PCWSTR(n.as_ptr()), None, REG_SZ, Some(&v)) };
-    if r.is_err() { Err(format!("registry: cannot set {name} ({r:?})")) } else { Ok(()) }
+    if r.is_err() {
+        Err(format!("registry: cannot set {name} ({r:?})"))
+    } else {
+        Ok(())
+    }
 }
 
 fn set_dword(k: &Key, name: &str, value: u32) -> Result<(), String> {
     let n = wide(name);
     // SAFETY: buffers outlive the call.
     let r = unsafe { RegSetValueExW(k.0, PCWSTR(n.as_ptr()), None, REG_DWORD, Some(&value.to_le_bytes())) };
-    if r.is_err() { Err(format!("registry: cannot set {name} ({r:?})")) } else { Ok(()) }
+    if r.is_err() {
+        Err(format!("registry: cannot set {name} ({r:?})"))
+    } else {
+        Ok(())
+    }
 }
 
 fn open_key(path: &str, write: bool) -> Option<Key> {
@@ -154,7 +168,16 @@ fn get_str(path: &str, name: &str) -> Option<String> {
             return None;
         }
         let mut buf = vec![0u8; len as usize];
-        RegQueryValueExW(k.0, PCWSTR(n.as_ptr()), None, None, Some(buf.as_mut_ptr()), Some(&mut len)).ok().ok()?;
+        RegQueryValueExW(
+            k.0,
+            PCWSTR(n.as_ptr()),
+            None,
+            None,
+            Some(buf.as_mut_ptr()),
+            Some(&mut len),
+        )
+        .ok()
+        .ok()?;
         let u: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         Some(String::from_utf16_lossy(&u).trim_end_matches('\0').to_owned())
     }
@@ -175,7 +198,11 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     let name = run_value_name();
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        set_str(&create_key(RUN_KEY)?, &name, &format!("\"{}\" --minimized", exe.display()))
+        set_str(
+            &create_key(RUN_KEY)?,
+            &name,
+            &format!("\"{}\" --minimized", exe.display()),
+        )
     } else if let Some(k) = open_key(RUN_KEY, true) {
         let n = wide(&name);
         // SAFETY: valid value name.
@@ -255,10 +282,10 @@ pub fn install(opts: InstallOptions) -> Result<PathBuf, String> {
 
     let menu = start_menu_dir().ok_or("cannot find the Start menu folder")?;
     create_shortcut(&menu.join("SnapForge.lnk"), &dst, "", "SnapForge")?;
-    if opts.desktop_shortcut {
-        if let Some(desk) = desktop_dir() {
-            create_shortcut(&desk.join("SnapForge.lnk"), &dst, "", "SnapForge")?;
-        }
+    if opts.desktop_shortcut
+        && let Some(desk) = desktop_dir()
+    {
+        create_shortcut(&desk.join("SnapForge.lnk"), &dst, "", "SnapForge")?;
     }
     // SAFETY: no parameters; refreshes shell icons.
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
@@ -287,7 +314,10 @@ pub fn uninstall(remove_data: bool) -> Result<(), String> {
         targets.push(snapforge_core::paths::data_dir());
     }
     // the running exe lives in the install folder: let a detached shell delete it after we exit
-    let cmds: Vec<String> = targets.iter().map(|d| format!("rmdir /s /q \"{}\"", d.display())).collect();
+    let cmds: Vec<String> = targets
+        .iter()
+        .map(|d| format!("rmdir /s /q \"{}\"", d.display()))
+        .collect();
     if !cmds.is_empty() {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("cmd")
@@ -303,8 +333,21 @@ pub fn uninstall(remove_data: bool) -> Result<(), String> {
 pub fn run_elevated(exe: &Path, args: &str) -> Result<(), String> {
     let (e, a) = (wide(&exe.to_string_lossy()), wide(args));
     // SAFETY: NUL-terminated strings outlive the call; no window or directory.
-    let h = unsafe { ShellExecuteW(None, w!("runas"), PCWSTR(e.as_ptr()), PCWSTR(a.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL) };
-    if h.0 as isize > 32 { Ok(()) } else { Err("the UAC prompt was declined".into()) }
+    let h = unsafe {
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            PCWSTR(e.as_ptr()),
+            PCWSTR(a.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if h.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err("the UAC prompt was declined".into())
+    }
 }
 
 pub fn open_path(path: &Path) {
@@ -337,7 +380,10 @@ mod tests {
             std::env::set_var("SNAPFORGE_RUN_VALUE", "SnapForgeTest");
             std::env::set_var("SNAPFORGE_UNINSTALL_NAME", "SnapForgeTest");
         }
-        let exe = install(InstallOptions { desktop_shortcut: false }).expect("install");
+        let exe = install(InstallOptions {
+            desktop_shortcut: false,
+        })
+        .expect("install");
         assert!(exe.exists());
         assert!(root.join("menu").join("SnapForge.lnk").exists(), "Start menu shortcut");
         assert_eq!(
@@ -345,9 +391,16 @@ mod tests {
             Some(env!("CARGO_PKG_VERSION")),
             "Apps & features entry"
         );
-        assert!(get_str(&uninstall_key(), "UninstallString").unwrap().ends_with("--uninstall"));
+        assert!(
+            get_str(&uninstall_key(), "UninstallString")
+                .unwrap()
+                .ends_with("--uninstall")
+        );
         // reinstall over an existing copy works
-        install(InstallOptions { desktop_shortcut: false }).expect("reinstall");
+        install(InstallOptions {
+            desktop_shortcut: false,
+        })
+        .expect("reinstall");
 
         set_autostart(true).unwrap();
         assert!(autostart_enabled());

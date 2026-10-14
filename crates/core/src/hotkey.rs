@@ -65,12 +65,11 @@ fn key_from_name(name: &str) -> Option<u32> {
             return Some(c as u32);
         }
     }
-    if let Some(rest) = n.strip_prefix('f') {
-        if let Ok(k) = rest.parse::<u32>() {
-            if (1..=24).contains(&k) {
-                return Some(0x70 + k - 1);
-            }
-        }
+    if let Some(rest) = n.strip_prefix('f')
+        && let Ok(k) = rest.parse::<u32>()
+        && (1..=24).contains(&k)
+    {
+        return Some(0x70 + k - 1);
     }
     NAMED.iter().find(|(k, _)| *k == n).map(|(_, v)| *v)
 }
@@ -85,7 +84,9 @@ fn key_name(vk: u32) -> String {
             .find(|(_, v)| *v == vk)
             .map(|(k, _)| {
                 let mut c = k.chars();
-                c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+                c.next()
+                    .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                    .unwrap_or_default()
             })
             .unwrap_or_else(|| format!("0x{vk:02X}")),
     }
@@ -136,7 +137,12 @@ impl FromStr for Combo {
 
 impl fmt::Display for Combo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (bit, name) in [(MOD_CTRL, "Ctrl"), (MOD_ALT, "Alt"), (MOD_SHIFT, "Shift"), (MOD_WIN, "Win")] {
+        for (bit, name) in [
+            (MOD_CTRL, "Ctrl"),
+            (MOD_ALT, "Alt"),
+            (MOD_SHIFT, "Shift"),
+            (MOD_WIN, "Win"),
+        ] {
             if self.mods & bit != 0 {
                 write!(f, "{name}+")?;
             }
@@ -222,7 +228,7 @@ impl Profile {
 }
 
 #[cfg(windows)]
-pub use win::{HotkeyManager, probe_system};
+pub use win::{HotkeyManager, Registered, probe_system};
 
 #[cfg(windows)]
 mod win {
@@ -395,7 +401,13 @@ mod tests {
     #[test]
     fn parse_and_format_roundtrip() {
         let c: Combo = "ctrl + shift+s".parse().unwrap();
-        assert_eq!(c, Combo { mods: MOD_CTRL | MOD_SHIFT, vk: 0x53 });
+        assert_eq!(
+            c,
+            Combo {
+                mods: MOD_CTRL | MOD_SHIFT,
+                vk: 0x53
+            }
+        );
         assert_eq!(c.to_string(), "Ctrl+Shift+S");
         assert_eq!("Win+Alt+F12".parse::<Combo>().unwrap().to_string(), "Alt+Win+F12");
         assert_eq!("PrintScreen".parse::<Combo>().unwrap().vk, 0x2C);
@@ -443,15 +455,24 @@ mod tests {
         // Ctrl+Alt+Shift+F23 is a combination nobody uses
         let combo: Combo = "Ctrl+Alt+Shift+F23".parse().unwrap();
         let b = vec![
-            Binding { action: HotAction::CaptureRegion, combo },
-            Binding { action: HotAction::CaptureWindow, combo },
+            Binding {
+                action: HotAction::CaptureRegion,
+                combo,
+            },
+            Binding {
+                action: HotAction::CaptureWindow,
+                combo,
+            },
         ];
         let r = m.set_bindings(b);
         assert_eq!(r.len(), 2);
         assert!(r[0].error.is_none(), "first registration succeeds: {:?}", r[0].error);
         assert!(r[1].error.is_some(), "the same combination cannot be registered twice");
         // after reconfiguring, the combination is free again
-        let r = m.set_bindings(vec![Binding { action: HotAction::CaptureScreen, combo }]);
+        let r = m.set_bindings(vec![Binding {
+            action: HotAction::CaptureScreen,
+            combo,
+        }]);
         assert!(r[0].error.is_none());
     }
 
@@ -461,10 +482,14 @@ mod tests {
         let combo: Combo = "Ctrl+Alt+Shift+F22".parse().unwrap();
         let m = HotkeyManager::spawn(|_| {});
         assert!(probe_system(&combo).is_ok());
-        assert!(m
-            .set_bindings(vec![Binding { action: HotAction::CaptureRegion, combo }])[0]
-            .error
-            .is_none());
+        assert!(
+            m.set_bindings(vec![Binding {
+                action: HotAction::CaptureRegion,
+                combo
+            }])[0]
+                .error
+                .is_none()
+        );
         assert!(probe_system(&combo).is_err(), "held by the manager's thread");
     }
 }

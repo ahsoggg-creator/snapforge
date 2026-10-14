@@ -46,12 +46,23 @@ pub struct Object {
     pub color: Color,
     /// Stroke width in image pixels (for `Step`: derives the badge radius).
     pub width: f32,
+    /// Hidden objects stay in the document but are not drawn or exported.
+    #[serde(default = "yes")]
+    pub visible: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn dist_to_segment(p: Pt, a: Pt, b: Pt) -> f32 {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let len2 = dx * dx + dy * dy;
-    let t = if len2 == 0.0 { 0.0 } else { (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0) };
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+    };
     ((p.x - (a.x + t * dx)).powi(2) + (p.y - (a.y + t * dy)).powi(2)).sqrt()
 }
 
@@ -110,9 +121,10 @@ impl Shape {
         let pad = width / 2.0;
         let (lo, hi) = match self {
             Shape::Line { a, b } | Shape::Arrow { a, b } => norm_rect(*a, *b),
-            Shape::Rect { a, b, .. } | Shape::Ellipse { a, b, .. } | Shape::Blur { a, b, .. } | Shape::Pixelate { a, b, .. } => {
-                norm_rect(*a, *b)
-            }
+            Shape::Rect { a, b, .. }
+            | Shape::Ellipse { a, b, .. }
+            | Shape::Blur { a, b, .. }
+            | Shape::Pixelate { a, b, .. } => norm_rect(*a, *b),
             Shape::Text { at, text, size } => {
                 let (w, h) = render::measure_text(text, *size);
                 (*at, Pt::new(at.x + w, at.y + h))
@@ -135,7 +147,11 @@ impl Shape {
                 }
             }
         };
-        let pad = if matches!(self, Shape::Marker { .. }) { width * 2.5 } else { pad };
+        let pad = if matches!(self, Shape::Marker { .. }) {
+            width * 2.5
+        } else {
+            pad
+        };
         (Pt::new(lo.x - pad, lo.y - pad), Pt::new(hi.x + pad, hi.y + pad))
     }
 
@@ -158,10 +174,18 @@ impl Shape {
                 let (cx, cy) = ((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
                 let (rx, ry) = (((hi.x - lo.x) / 2.0).max(1.0), ((hi.y - lo.y) / 2.0).max(1.0));
                 let d = (((p.x - cx) / rx).powi(2) + ((p.y - cy) / ry).powi(2)).sqrt();
-                if *fill { d <= 1.0 + reach / rx.min(ry) } else { (d - 1.0).abs() <= reach / rx.min(ry) }
+                if *fill {
+                    d <= 1.0 + reach / rx.min(ry)
+                } else {
+                    (d - 1.0).abs() <= reach / rx.min(ry)
+                }
             }
             Shape::Pencil { pts } | Shape::Marker { pts } => {
-                let reach = if matches!(self, Shape::Marker { .. }) { width * 2.5 + tol } else { reach };
+                let reach = if matches!(self, Shape::Marker { .. }) {
+                    width * 2.5 + tol
+                } else {
+                    reach
+                };
                 match pts.len() {
                     0 => false,
                     1 => ((p.x - pts[0].x).powi(2) + (p.y - pts[0].y).powi(2)).sqrt() <= reach,
@@ -184,7 +208,10 @@ impl Shape {
     pub fn handles(&self) -> Vec<Pt> {
         match self {
             Shape::Line { a, b } | Shape::Arrow { a, b } => vec![*a, *b],
-            Shape::Rect { a, b, .. } | Shape::Ellipse { a, b, .. } | Shape::Blur { a, b, .. } | Shape::Pixelate { a, b, .. } => {
+            Shape::Rect { a, b, .. }
+            | Shape::Ellipse { a, b, .. }
+            | Shape::Blur { a, b, .. }
+            | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 vec![lo, Pt::new(hi.x, lo.y), hi, Pt::new(lo.x, hi.y)]
             }
@@ -202,7 +229,10 @@ impl Shape {
                     *b = to
                 }
             }
-            Shape::Rect { a, b, .. } | Shape::Ellipse { a, b, .. } | Shape::Blur { a, b, .. } | Shape::Pixelate { a, b, .. } => {
+            Shape::Rect { a, b, .. }
+            | Shape::Ellipse { a, b, .. }
+            | Shape::Blur { a, b, .. }
+            | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 // the opposite corner stays fixed
                 let anchor = match i {
@@ -243,7 +273,13 @@ impl Document {
     pub fn add(&mut self, shape: Shape, color: Color, width: f32) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.objects.push(Object { id, shape, color, width });
+        self.objects.push(Object {
+            id,
+            shape,
+            color,
+            width,
+            visible: true,
+        });
         id
     }
 
@@ -263,7 +299,11 @@ impl Document {
 
     /// Topmost object under `p`.
     pub fn hit_test(&self, p: Pt, tol: f32) -> Option<u64> {
-        self.objects.iter().rev().find(|o| o.shape.hit(p, o.width, tol)).map(|o| o.id)
+        self.objects
+            .iter()
+            .rev()
+            .find(|o| o.visible && o.shape.hit(p, o.width, tol))
+            .map(|o| o.id)
     }
 
     /// Number for the next numbered marker.
@@ -303,10 +343,24 @@ impl Document {
         if r == full {
             return false;
         }
-        self.base = Arc::new(image::imageops::crop_imm(&*self.base, r.x as u32, r.y as u32, r.w as u32, r.h as u32).to_image());
+        self.base =
+            Arc::new(image::imageops::crop_imm(&*self.base, r.x as u32, r.y as u32, r.w as u32, r.h as u32).to_image());
         for o in &mut self.objects {
             o.shape.translate(-(r.x as f32), -(r.y as f32));
         }
+        true
+    }
+
+    /// Moves object `id` one step up (towards the front) or down. Returns false at the end of the list.
+    pub fn move_layer(&mut self, id: u64, up: bool) -> bool {
+        let Some(i) = self.objects.iter().position(|o| o.id == id) else {
+            return false;
+        };
+        let j = if up { i + 1 } else { i.wrapping_sub(1) };
+        if j >= self.objects.len() {
+            return false;
+        }
+        self.objects.swap(i, j);
         true
     }
 
@@ -341,6 +395,11 @@ impl Editor {
             self.undo.remove(0);
         }
         self.redo.clear();
+    }
+
+    /// Forgets the last checkpoint (the gesture it was taken for produced no change).
+    pub fn cancel_checkpoint(&mut self) {
+        self.undo.pop();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -384,8 +443,22 @@ mod tests {
     #[test]
     fn ids_are_unique_and_removal_works() {
         let mut d = doc(10, 10);
-        let a = d.add(Shape::Line { a: Pt::new(0.0, 0.0), b: Pt::new(5.0, 5.0) }, DEFAULT_COLOR, 2.0);
-        let b = d.add(Shape::Line { a: Pt::new(0.0, 0.0), b: Pt::new(5.0, 5.0) }, DEFAULT_COLOR, 2.0);
+        let a = d.add(
+            Shape::Line {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(5.0, 5.0),
+            },
+            DEFAULT_COLOR,
+            2.0,
+        );
+        let b = d.add(
+            Shape::Line {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(5.0, 5.0),
+            },
+            DEFAULT_COLOR,
+            2.0,
+        );
         assert_ne!(a, b);
         assert!(d.remove(a) && !d.remove(a));
         assert_eq!(d.objects.len(), 1);
@@ -394,24 +467,35 @@ mod tests {
     #[test]
     fn hit_test_returns_topmost() {
         let mut d = doc(100, 100);
-        let r = |a, b| Shape::Rect { a: Pt::new(a, a), b: Pt::new(b, b), fill: true };
+        let r = |a, b| Shape::Rect {
+            a: Pt::new(a, a),
+            b: Pt::new(b, b),
+            fill: true,
+        };
         let _low = d.add(r(0.0, 50.0), DEFAULT_COLOR, 2.0);
         let top = d.add(r(20.0, 70.0), DEFAULT_COLOR, 2.0);
         assert_eq!(d.hit_test(Pt::new(30.0, 30.0), 2.0), Some(top));
-        assert_eq!(d.hit_test(Pt::new(5.0, 5.0), 2.0).is_some(), true);
+        assert!(d.hit_test(Pt::new(5.0, 5.0), 2.0).is_some());
         assert_eq!(d.hit_test(Pt::new(95.0, 95.0), 2.0), None);
     }
 
     #[test]
     fn hollow_rect_hits_only_the_border() {
-        let s = Shape::Rect { a: Pt::new(10.0, 10.0), b: Pt::new(90.0, 90.0), fill: false };
+        let s = Shape::Rect {
+            a: Pt::new(10.0, 10.0),
+            b: Pt::new(90.0, 90.0),
+            fill: false,
+        };
         assert!(s.hit(Pt::new(10.0, 50.0), 4.0, 2.0));
         assert!(!s.hit(Pt::new(50.0, 50.0), 4.0, 2.0));
     }
 
     #[test]
     fn line_hit_uses_distance() {
-        let s = Shape::Line { a: Pt::new(0.0, 0.0), b: Pt::new(100.0, 0.0) };
+        let s = Shape::Line {
+            a: Pt::new(0.0, 0.0),
+            b: Pt::new(100.0, 0.0),
+        };
         assert!(s.hit(Pt::new(50.0, 3.0), 4.0, 2.0));
         assert!(!s.hit(Pt::new(50.0, 20.0), 4.0, 2.0));
     }
@@ -423,7 +507,14 @@ mod tests {
         let mut img = (*d.base).clone();
         img.put_pixel(0, 0, Rgba([1, 2, 3, 255]));
         d.base = Arc::new(img);
-        d.add(Shape::Step { at: Pt::new(0.0, 0.0), n: 1 }, DEFAULT_COLOR, 4.0);
+        d.add(
+            Shape::Step {
+                at: Pt::new(0.0, 0.0),
+                n: 1,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
         d.rotate_cw();
         assert_eq!(d.size(), (20, 40));
         // top-left goes to top-right after a clockwise turn
@@ -437,7 +528,14 @@ mod tests {
     #[test]
     fn rotate_ccw_inverts_cw() {
         let mut d = doc(40, 20);
-        d.add(Shape::Step { at: Pt::new(7.0, 3.0), n: 1 }, DEFAULT_COLOR, 4.0);
+        d.add(
+            Shape::Step {
+                at: Pt::new(7.0, 3.0),
+                n: 1,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
         d.rotate_cw();
         d.rotate_ccw();
         assert_eq!(d.size(), (40, 20));
@@ -450,7 +548,14 @@ mod tests {
     #[test]
     fn crop_shifts_objects_and_clamps() {
         let mut d = doc(100, 100);
-        d.add(Shape::Step { at: Pt::new(60.0, 70.0), n: 1 }, DEFAULT_COLOR, 4.0);
+        d.add(
+            Shape::Step {
+                at: Pt::new(60.0, 70.0),
+                n: 1,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
         assert!(d.crop(Rect::new(50, 50, 200, 200)));
         assert_eq!(d.size(), (50, 50));
         match d.objects[0].shape {
@@ -462,11 +567,59 @@ mod tests {
     }
 
     #[test]
+    fn layers_reorder_and_hide() {
+        let mut d = doc(20, 20);
+        let a = d.add(
+            Shape::Rect {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(10.0, 10.0),
+                fill: true,
+            },
+            [255, 0, 0, 255],
+            1.0,
+        );
+        let b = d.add(
+            Shape::Rect {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(10.0, 10.0),
+                fill: true,
+            },
+            [0, 0, 255, 255],
+            1.0,
+        );
+        assert_eq!(d.render().get_pixel(5, 5).0, [0, 0, 255, 255], "later object is on top");
+        assert!(d.move_layer(a, true));
+        assert_eq!(d.render().get_pixel(5, 5).0, [255, 0, 0, 255], "moved to the front");
+        assert!(!d.move_layer(a, true), "already on top");
+        d.get_mut(a).unwrap().visible = false;
+        assert_eq!(
+            d.render().get_pixel(5, 5).0,
+            [0, 0, 255, 255],
+            "hidden objects are not drawn"
+        );
+        assert_eq!(d.hit_test(Pt::new(5.0, 5.0), 1.0), Some(b), "and cannot be picked");
+    }
+
+    #[test]
     fn step_numbers_increment() {
         let mut d = doc(10, 10);
         assert_eq!(d.next_step_number(), 1);
-        d.add(Shape::Step { at: Pt::default(), n: 1 }, DEFAULT_COLOR, 4.0);
-        d.add(Shape::Step { at: Pt::default(), n: 5 }, DEFAULT_COLOR, 4.0);
+        d.add(
+            Shape::Step {
+                at: Pt::default(),
+                n: 1,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
+        d.add(
+            Shape::Step {
+                at: Pt::default(),
+                n: 5,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
         assert_eq!(d.next_step_number(), 6);
     }
 
@@ -474,7 +627,14 @@ mod tests {
     fn undo_redo_restores_objects_and_base() {
         let mut e = Editor::new(RgbaImage::from_pixel(30, 20, Rgba([0, 0, 0, 255])));
         e.checkpoint();
-        e.doc.add(Shape::Step { at: Pt::default(), n: 1 }, DEFAULT_COLOR, 4.0);
+        e.doc.add(
+            Shape::Step {
+                at: Pt::default(),
+                n: 1,
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
         e.checkpoint();
         e.doc.rotate_cw();
         assert_eq!(e.doc.size(), (20, 30));
@@ -494,7 +654,11 @@ mod tests {
 
     #[test]
     fn handles_resize_keeping_opposite_corner() {
-        let mut s = Shape::Rect { a: Pt::new(10.0, 10.0), b: Pt::new(50.0, 40.0), fill: false };
+        let mut s = Shape::Rect {
+            a: Pt::new(10.0, 10.0),
+            b: Pt::new(50.0, 40.0),
+            fill: false,
+        };
         assert_eq!(s.handles().len(), 4);
         s.move_handle(2, Pt::new(80.0, 90.0)); // bottom-right
         let (lo, hi) = match &s {
@@ -507,7 +671,15 @@ mod tests {
     #[test]
     fn serde_roundtrip_keeps_objects_vector() {
         let mut d = doc(10, 10);
-        d.add(Shape::Text { at: Pt::new(1.0, 2.0), text: "hi".into(), size: 20.0 }, DEFAULT_COLOR, 2.0);
+        d.add(
+            Shape::Text {
+                at: Pt::new(1.0, 2.0),
+                text: "hi".into(),
+                size: 20.0,
+            },
+            DEFAULT_COLOR,
+            2.0,
+        );
         let json = serde_json::to_string(&d.objects).unwrap();
         let back: Vec<Object> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, d.objects);

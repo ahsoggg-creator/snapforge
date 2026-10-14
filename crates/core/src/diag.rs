@@ -47,14 +47,20 @@ static PATTERNS: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| 
     let p = |re: &str, rep: &'static str| (regex::Regex::new(re).expect("static regex"), rep);
     vec![
         p(r"(?i)bot\d{5,}:[A-Za-z0-9_-]{20,}", "bot<redacted>"),
-        p(r"(?i)(authorization|x-api-key|x-auth-token|cookie)\s*[:=]\s*[^\r\n]+", "$1: <redacted>"),
+        p(
+            r"(?i)(authorization|x-api-key|x-auth-token|cookie)\s*[:=]\s*[^\r\n]+",
+            "$1: <redacted>",
+        ),
         p(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer <redacted>"),
         p(
             r"(?i)([?&;\s]|\b)(token|access_token|api[_-]?key|secret|secret[_-]?key|password|passwd|signature|x-amz-signature|x-amz-credential|key)=([^&\s]+)",
             "$1$2=<redacted>",
         ),
         p(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b", "<aws-key-id>"),
-        p(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+", "<discord-webhook>"),
+        p(
+            r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+",
+            "<discord-webhook>",
+        ),
     ]
 });
 
@@ -101,10 +107,10 @@ pub fn log(level: Level, msg: &str) {
         sink.file = OpenOptions::new().create(true).append(true).open(&cur).ok();
         sink.size = 0;
     }
-    if let Some(f) = sink.file.as_mut() {
-        if f.write_all(line.as_bytes()).is_ok() {
-            sink.size += line.len() as u64;
-        }
+    if let Some(f) = sink.file.as_mut()
+        && f.write_all(line.as_bytes()).is_ok()
+    {
+        sink.size += line.len() as u64;
     }
 }
 

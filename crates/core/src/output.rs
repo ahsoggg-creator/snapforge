@@ -35,7 +35,12 @@ pub fn encode(img: &RgbaImage, format: ImageFormat, jpeg_quality: u8) -> Result<
 
 /// Format by file extension (`.jpg`/`.jpeg` → JPEG, everything else → PNG).
 pub fn format_for_path(path: &Path) -> ImageFormat {
-    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("jpg" | "jpeg") => ImageFormat::Jpeg,
         _ => ImageFormat::Png,
     }
@@ -51,7 +56,13 @@ pub fn save_as(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), Out
 }
 
 /// Writes `dir/stem.ext` (a numeric suffix is added if it exists). Returns the final path.
-pub fn save_to_dir(img: &RgbaImage, dir: &Path, stem: &str, format: ImageFormat, jpeg_quality: u8) -> Result<PathBuf, OutputError> {
+pub fn save_to_dir(
+    img: &RgbaImage,
+    dir: &Path,
+    stem: &str,
+    format: ImageFormat,
+    jpeg_quality: u8,
+) -> Result<PathBuf, OutputError> {
     fs::create_dir_all(dir)?;
     let path = naming::unique_path(dir, &naming::sanitize(stem), format.ext());
     fs::write(&path, encode(img, format, jpeg_quality)?)?;
@@ -70,7 +81,8 @@ pub fn copy_to_clipboard(img: &RgbaImage) -> Result<(), OutputError> {
 
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), OutputError> {
     let mut cb = arboard::Clipboard::new().map_err(|e| OutputError::Clipboard(e.to_string()))?;
-    cb.set_text(text.to_owned()).map_err(|e| OutputError::Clipboard(e.to_string()))
+    cb.set_text(text.to_owned())
+        .map_err(|e| OutputError::Clipboard(e.to_string()))
 }
 
 #[cfg(test)]

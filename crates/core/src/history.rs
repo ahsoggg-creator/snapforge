@@ -100,6 +100,23 @@ impl History {
         Ok(entry)
     }
 
+    /// Replaces the stored picture of an entry (after the user edited and saved it).
+    pub fn replace_image(&mut self, id: &str, img: &RgbaImage) -> Result<(), HistoryError> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or(HistoryError::Missing)?;
+        e.width = img.width();
+        e.height = img.height();
+        fs::write(self.dir.join(format!("{id}.png")), encode_png_fast(img)?)?;
+        fs::write(
+            self.dir.join(format!("{id}.thumb.png")),
+            encode_png_fast(&fit_thumbnail(img))?,
+        )?;
+        self.save_index()
+    }
+
     pub fn load_image(&self, id: &str) -> Result<RgbaImage, HistoryError> {
         if !self.entries.iter().any(|e| e.id == id) {
             return Err(HistoryError::Missing);
@@ -135,7 +152,12 @@ impl History {
             return Ok(0);
         }
         let limit = now_unix.saturating_sub(days as u64 * 86_400);
-        let old: Vec<String> = self.entries.iter().filter(|e| e.created < limit).map(|e| e.id.clone()).collect();
+        let old: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|e| e.created < limit)
+            .map(|e| e.id.clone())
+            .collect();
         for id in &old {
             self.delete(id)?;
         }
@@ -170,7 +192,12 @@ fn fit_thumbnail(src: &RgbaImage) -> RgbaImage {
     let (w, h) = (((sw as f32 * scale) as u32).max(1), ((sh as f32 * scale) as u32).max(1));
     let scaled = image::imageops::resize(src, w, h, Resize::Triangle);
     let mut canvas = RgbaImage::from_pixel(THUMB_W, THUMB_H, image::Rgba([24, 24, 32, 255]));
-    image::imageops::overlay(&mut canvas, &scaled, ((THUMB_W - w) / 2) as i64, ((THUMB_H - h) / 2) as i64);
+    image::imageops::overlay(
+        &mut canvas,
+        &scaled,
+        ((THUMB_W - w) / 2) as i64,
+        ((THUMB_H - h) / 2) as i64,
+    );
     canvas
 }
 
@@ -225,7 +252,10 @@ mod tests {
             h.add(&img(8, 8), "x", 1000 + i).unwrap();
         }
         assert_eq!(h.clear().unwrap(), 3);
-        let pngs = fs::read_dir(&d).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "png")).count();
+        let pngs = fs::read_dir(&d)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "png"))
+            .count();
         assert_eq!(pngs, 0);
         assert!(History::open(&d).entries().is_empty());
         fs::remove_dir_all(&d).unwrap();

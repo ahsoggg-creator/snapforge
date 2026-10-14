@@ -10,6 +10,8 @@ fn main() {
             )
         };
         let macros = [v("SF_MAJOR"), v("SF_MINOR"), v("SF_PATCH")];
-        embed_resource::compile("assets/app.rc", &macros).manifest_optional().unwrap();
+        embed_resource::compile("assets/app.rc", &macros)
+            .manifest_optional()
+            .unwrap();
     }
 }

@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
-use windows::core::BOOL;
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
 use windows::Win32::System::Threading::{
@@ -16,6 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
 };
+use windows::core::BOOL;
 
 use crate::geometry::{Monitor, Rect};
 
@@ -39,7 +39,11 @@ unsafe extern "system" fn monitor_cb(h: HMONITOR, _: HDC, _: *mut RECT, data: LP
         let (mut dx, mut dy) = (96u32, 96u32);
         // SAFETY: out parameters are valid locals.
         let _ = unsafe { GetDpiForMonitor(h, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) };
-        let len = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+        let len = info
+            .szDevice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.szDevice.len());
         list.push(Monitor {
             index: list.len(),
             name: String::from_utf16_lossy(&info.szDevice[..len]),
@@ -91,7 +95,12 @@ fn process_name(hwnd: HWND) -> String {
         };
         let mut buf = [0u16; 520];
         let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_FORMAT(0), windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let ok = QueryFullProcessImageNameW(
+            h,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
         let _ = CloseHandle(h);
         if ok.is_err() {
             return String::new();
@@ -148,17 +157,18 @@ unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> BOOL {
             return BOOL(1);
         }
     }
-    if let Some(w) = window_info(hwnd) {
-        if !w.title.is_empty() && w.rect.w > 8 && w.rect.h > 8 {
-            st.out.push(w);
-        }
+    if let Some(w) = window_info(hwnd).filter(|w| !w.title.is_empty() && w.rect.w > 8 && w.rect.h > 8) {
+        st.out.push(w);
     }
     BOOL(1)
 }
 
 /// Visible top-level windows in z-order (topmost first). `exclude` is a window to skip (our own overlay).
 pub fn visible_windows(exclude: isize) -> Vec<WindowInfo> {
-    let mut st = EnumState { exclude, out: Vec::new() };
+    let mut st = EnumState {
+        exclude,
+        out: Vec::new(),
+    };
     // SAFETY: the callback only touches `st`, which outlives the call.
     unsafe {
         let _ = EnumWindows(Some(window_cb), LPARAM(&mut st as *mut _ as isize));
@@ -175,7 +185,11 @@ pub fn window_at(windows: &[WindowInfo], x: i32, y: i32) -> Option<&WindowInfo> 
 pub fn foreground_app() -> String {
     // SAFETY: read-only query.
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0.is_null() { String::new() } else { process_name(hwnd) }
+    if hwnd.0.is_null() {
+        String::new()
+    } else {
+        process_name(hwnd)
+    }
 }
 
 #[cfg(test)]
