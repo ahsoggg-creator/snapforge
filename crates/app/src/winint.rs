@@ -7,7 +7,7 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, IPersistFile,
 };
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW,
+    HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW,
     RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::UI::Shell::{IShellLinkW, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, ShellExecuteW, ShellLink};
@@ -137,7 +137,7 @@ fn open_key(path: &str, write: bool) -> Option<Key> {
             HKEY_CURRENT_USER,
             PCWSTR(p.as_ptr()),
             None,
-            if write { KEY_WRITE } else { KEY_READ },
+            if write { KEY_ALL_ACCESS } else { KEY_READ },
             &mut h,
         )
     };
@@ -275,10 +275,11 @@ pub fn uninstall(remove_data: bool) -> Result<(), String> {
         let _ = std::fs::remove_file(desk.join("SnapForge.lnk"));
     }
     let _ = set_autostart(false);
-    if let Some(parent) = open_key("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall", true) {
+    if let Some(parent) = open_key(UNINSTALL_PARENT, true) {
+        let name = wide(&uninstall_name());
         // SAFETY: deletes only our own subkey.
         unsafe {
-            let _ = RegDeleteTreeW(parent.0, w!("SnapForge"));
+            let _ = RegDeleteTreeW(parent.0, PCWSTR(name.as_ptr()));
         }
     }
     let mut targets: Vec<PathBuf> = install_dir().into_iter().collect();
