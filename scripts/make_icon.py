@@ -22,7 +22,9 @@ def draw() -> Image.Image:
         sd.line((0, y, S, y), fill=(90, 140, 255, a))
     mask = Image.new("L", (S, S), 0)
     ImageDraw.Draw(mask).rounded_rectangle((32, 32, S - 32, S - 32), radius=220, fill=255)
-    img.paste(sheen, (0, 0), mask)
+    sheen.putalpha(Image.composite(sheen.getchannel("A"), Image.new("L", (S, S), 0), mask))
+    img = Image.alpha_composite(img, sheen)
+    d = ImageDraw.Draw(img)
 
     accent = (96, 165, 250, 255)
     w, L, m = 56, 210, 190  # stroke, corner length, margin

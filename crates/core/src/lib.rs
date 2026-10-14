@@ -11,4 +11,5 @@ pub mod output;
 pub mod paths;
 pub mod settings;
 
+pub use image;
 pub use image::RgbaImage;
