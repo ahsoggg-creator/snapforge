@@ -197,6 +197,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "needs a real interactive desktop"]
     fn real_capture_of_primary_monitor_gdi_and_wgc() {
         sys::enable_dpi_awareness();
         let monitors = sys::monitors();

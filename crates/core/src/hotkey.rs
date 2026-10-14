@@ -450,6 +450,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "needs a real interactive desktop"]
     fn manager_registers_and_reports_conflicts() {
         let m = HotkeyManager::spawn(|_| {});
         // Ctrl+Alt+Shift+F23 is a combination nobody uses
@@ -478,6 +479,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "needs a real interactive desktop"]
     fn probe_detects_taken_combination() {
         let combo: Combo = "Ctrl+Alt+Shift+F22".parse().unwrap();
         let m = HotkeyManager::spawn(|_| {});

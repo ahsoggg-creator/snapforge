@@ -211,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a real interactive desktop"]
     fn real_monitors_are_enumerated() {
         enable_dpi_awareness();
         let m = monitors();
