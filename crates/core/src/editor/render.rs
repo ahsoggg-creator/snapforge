@@ -55,14 +55,14 @@ fn sk(c: Color) -> SkColor {
     SkColor::from_rgba8(c[0], c[1], c[2], c[3])
 }
 
-fn paint(c: Color) -> Paint<'static> {
+pub(crate) fn paint(c: Color) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color(sk(c));
     p.anti_alias = true;
     p
 }
 
-fn stroke(width: f32, cap: LineCap) -> Stroke {
+pub(crate) fn stroke(width: f32, cap: LineCap) -> Stroke {
     Stroke {
         width: width.max(1.0),
         line_cap: cap,
@@ -188,6 +188,7 @@ fn draw_object(pm: &mut Pixmap, o: &Object) {
             let (lo, hi) = norm_rect(*a, *b);
             pixelate_region(pm, lo, hi, *block);
         }
+        Shape::Chart { a, b, spec } => super::chart::draw(pm, *a, *b, spec, o.color),
         Shape::Step { at, n } => {
             let r = step_radius(o.width);
             let mut pb = PathBuilder::new();
@@ -255,7 +256,7 @@ fn blend(dst: &mut [u8], c: Color, cov: f32) {
     dst[3] = ((a + dst[3] as f32 / 255.0 * (1.0 - a)) * 255.0).round() as u8;
 }
 
-fn draw_text(pm: &mut Pixmap, text: &str, at: Pt, size: f32, color: Color) {
+pub(crate) fn draw_text(pm: &mut Pixmap, text: &str, at: Pt, size: f32, color: Color) {
     let Some(f) = font() else { return };
     let (w, h) = (pm.width() as i32, pm.height() as i32);
     let sc = f.as_scaled(PxScale::from(size));
