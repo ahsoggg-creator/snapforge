@@ -15,8 +15,10 @@ pub mod net;
 pub mod ocr;
 pub mod output;
 pub mod paths;
+pub mod secrets;
 pub mod sensitive;
 pub mod settings;
+pub mod upload;
 
 pub use image;
 pub use image::RgbaImage;
