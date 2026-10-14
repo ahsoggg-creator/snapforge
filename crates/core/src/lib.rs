@@ -2,10 +2,12 @@
 
 pub mod capture;
 pub mod diag;
+pub mod editor;
 pub mod geometry;
 pub mod history;
 pub mod hotkey;
 pub mod naming;
+pub mod output;
 pub mod paths;
 pub mod settings;
 

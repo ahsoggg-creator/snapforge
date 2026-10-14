@@ -113,6 +113,30 @@ pub fn capture_virtual_desktop(opts: CaptureOptions) -> Result<Capture, CaptureE
     capture_rect_on(&monitors, virtual_bounds(&monitors), opts)
 }
 
+/// What to capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// Any rectangle of the virtual desktop (a region or a window frame).
+    Rect(Rect),
+    /// One monitor by index (see `sys::monitors`).
+    Monitor(usize),
+    /// All monitors.
+    Screen,
+}
+
+/// Waits `delay_ms`, then captures `target`.
+#[cfg(windows)]
+pub fn take(target: Target, delay_ms: u32, opts: CaptureOptions) -> Result<Capture, CaptureError> {
+    if delay_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
+    }
+    match target {
+        Target::Rect(r) => capture_rect(r, opts),
+        Target::Monitor(i) => capture_monitor(i, opts),
+        Target::Screen => capture_virtual_desktop(opts),
+    }
+}
+
 /// The monitor under the cursor (falls back to the primary one).
 #[cfg(windows)]
 pub fn monitor_under_cursor(monitors: &[Monitor]) -> Option<&Monitor> {
