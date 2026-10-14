@@ -270,6 +270,7 @@ impl App {
                 for e in &entries {
                     ui.allocate_ui(vec2(250.0, 200.0), |ui| {
                         theme::card(ui).show(ui, |ui| {
+                            ui.set_min_size(vec2(224.0, 186.0));
                             if let Some(tex) = self.thumb(&ctx, &e.id)
                                 && ui
                                     .add(egui::Button::image(

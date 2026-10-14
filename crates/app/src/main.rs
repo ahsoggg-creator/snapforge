@@ -92,6 +92,8 @@ pub struct App {
     pub tour: Option<demo_tour::Tour>,
     pub demo_counter: usize,
     pub quit: bool,
+    /// Frames left before the window hides itself to the tray (start with `--minimized`).
+    pub hide_after_frames: Option<u8>,
     pub desktop_shortcut: bool,
 }
 
@@ -149,6 +151,7 @@ impl App {
             recording: None,
             demo_counter: 0,
             quit: false,
+            hide_after_frames: None,
             desktop_shortcut: true,
             flags,
         };
@@ -157,9 +160,9 @@ impl App {
             app.tray = tray::Tray::new(&cc.egui_ctx, app.settings.language);
             app.purge_history();
             app.maybe_check_update(&cc.egui_ctx);
+            // a window that is hidden before its first frame never gets any: hide it a few frames in
             if app.flags.minimized && app.settings.minimize_to_tray && app.tray.is_some() {
-                cc.egui_ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-                app.window_hidden = true;
+                app.hide_after_frames = Some(4);
             }
         }
         if demo {
@@ -266,6 +269,16 @@ impl App {
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
+        if let Some(n) = self.hide_after_frames {
+            if n == 0 {
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                self.window_hidden = true;
+                self.hide_after_frames = None;
+            } else {
+                self.hide_after_frames = Some(n - 1);
+                ctx.request_repaint();
+            }
+        }
         while let Ok(a) = self.hotkey_rx.try_recv() {
             self.start_capture(ctx, a);
         }

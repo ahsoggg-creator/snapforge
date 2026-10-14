@@ -602,6 +602,36 @@ mod tests {
 
     #[test]
     #[ignore = "needs an interactive desktop"]
+    fn window_mode_picks_the_hovered_window() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        sys::enable_dpi_awareness();
+        let window = |hwnd, x, y, w, h| sys::WindowInfo {
+            hwnd,
+            title: "t".into(),
+            app: "demo".into(),
+            rect: Rect::new(x, y, w, h),
+        };
+        // z-order: the small window is above the big one
+        let windows = vec![window(1, 300, 260, 100, 80), window(2, 200, 200, 300, 200)];
+        let req = Request {
+            mode: Mode::Window,
+            windows,
+            ..overlay_request((100, 100))
+        };
+        let t = std::thread::spawn(move || run(req));
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        // SAFETY: moving the cursor over the overlay.
+        unsafe {
+            let _ = SetCursorPos(320, 280);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        click(MOUSEEVENTF_LEFTDOWN);
+        click(MOUSEEVENTF_LEFTUP);
+        assert_eq!(t.join().unwrap(), Some(Rect::new(300, 260, 100, 80)));
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop"]
     fn right_click_cancels() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         sys::enable_dpi_awareness();
