@@ -35,7 +35,11 @@ impl Rect {
     }
 
     pub fn area(&self) -> i64 {
-        if self.is_empty() { 0 } else { self.w as i64 * self.h as i64 }
+        if self.is_empty() {
+            0
+        } else {
+            self.w as i64 * self.h as i64
+        }
     }
 
     pub fn contains(&self, px: i32, py: i32) -> bool {
@@ -76,6 +80,9 @@ pub struct Monitor {
     pub rect: Rect,
     pub dpi: u32,
     pub primary: bool,
+    /// Native monitor handle (HMONITOR) for the capture backends; 0 when unknown.
+    #[serde(skip)]
+    pub handle: isize,
 }
 
 impl Monitor {
@@ -91,7 +98,10 @@ impl Monitor {
     /// Monitor-local logical point -> physical point of the virtual desktop.
     pub fn logical_to_virtual(&self, lx: f64, ly: f64) -> (i32, i32) {
         let s = self.scale();
-        (self.rect.x + (lx * s).round() as i32, self.rect.y + (ly * s).round() as i32)
+        (
+            self.rect.x + (lx * s).round() as i32,
+            self.rect.y + (ly * s).round() as i32,
+        )
     }
 
     /// Physical point of the virtual desktop -> monitor-local logical point.
@@ -143,6 +153,7 @@ mod tests {
             rect: Rect::new(x, y, w, h),
             dpi,
             primary,
+            handle: 0,
         }
     }
 
