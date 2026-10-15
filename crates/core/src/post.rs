@@ -29,6 +29,8 @@ pub struct Preset {
     pub trim_margins: bool,
     pub watermark: bool,
     pub downscale: bool,
+    /// Plugin actions to run on the picture, as `plugin-id/action-id`.
+    pub plugin_actions: Vec<String>,
 }
 
 impl Default for Preset {
@@ -45,6 +47,7 @@ impl Default for Preset {
             trim_margins: false,
             watermark: false,
             downscale: false,
+            plugin_actions: Vec::new(),
         }
     }
 }
@@ -65,6 +68,7 @@ impl Preset {
             || self.trim_margins
             || self.watermark
             || self.downscale
+            || !self.plugin_actions.is_empty()
     }
 }
 

@@ -1,0 +1,11 @@
+name = "Custom Upload"
+version = "1.0.0"
+author = "SnapForge"
+description = "Uploads the picture to your own server and copies the link (edit the address in main.rhai)"
+main = "main.rhai"
+
+[permissions]
+clipboard = true
+ui = true
+# The plugin can reach ONLY these hosts (and their sub-domains). Change it together with the URL in main.rhai.
+net = ["upload.example.com"]

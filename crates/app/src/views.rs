@@ -30,6 +30,7 @@ impl App {
                 let mut tabs = vec![
                     (View::Home, "nav.home"),
                     (View::History, "nav.history"),
+                    (View::Plugins, "nav.plugins"),
                     (View::Settings, "nav.settings"),
                 ];
                 if self.editor.is_some() {
@@ -58,6 +59,7 @@ impl App {
                     .inner
             }
             View::Editor => self.editor_view(ui),
+            View::Plugins => self.plugins_view(ui),
             View::PostCapture => egui::CentralPanel::default().show(ui, |ui| self.post_view(ui)).inner,
         }
         self.toast_ui(ui.ctx());

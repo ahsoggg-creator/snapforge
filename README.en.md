@@ -5,21 +5,22 @@
 A safer ShareX alternative for Windows: screen capture, an editor with vector annotations, a screenshot history and
 global hotkeys. Everything stays on your computer; the only thing the app contacts is GitHub, to check for updates.
 
-![The after-capture panel: an address and a phone number found before hiding](docs/screenshots/04-review.png)
+![The built-in plugin editor: highlighted code, permissions, console](docs/screenshots/07-plugins.png)
 
 *All screenshots were made on invented data (`SnapForge.exe --demo`) — no real windows, names or people are shown.*
 
 ## How it differs from ShareX
 
-- **Safety.** No native DLL plugins and no arbitrary code. (Version 0.3.0 will add plugins as Rhai scripts in a
-  sandbox with explicit permissions; 0.2.0 has no plugins yet.)
+- **Safety.** No native DLL plugins and no arbitrary code: plugins are Rhai scripts in a sandbox that can do only
+  what you explicitly allowed (files only in the folders you name, network only to the domains you name, the clipboard,
+  the UI), with limits on time, operations and memory.
 - **Local by default.** Uploads are off until you switch them on and configure them; no telemetry, no cloud. The only
   network request by default is the update check, once a day (it can be turned off).
 - **Objects stay vector.** Arrows, frames, text, markers and blur can be moved, changed and deleted until you save
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.2.0)
+## Features (0.3.0)
 
 - **Capture:** region (frozen frame, magnifier next to the cursor, pixel-exact selection, arrow keys nudge the
   cursor by 1 px, Shift: 10), window, full screen, a single monitor. Multiple monitors with different scaling: all
@@ -52,9 +53,21 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   the response), a Discord webhook, a Telegram bot, S3-compatible storage (AWS SigV4 signing). Tokens and keys are
   stored **only in the Windows Credential Manager**, never in the settings files, and are stripped from the log and
   crash reports. The link is copied to the clipboard after an upload.
+- **Plugins (0.3.0).** Rhai scripts: the hooks `on_capture`, `on_before_save`, `on_after_save`, actions in the
+  after-capture panel, menu items and editor tools; picture operations (blur, pixelate, crop, text, overlay, pixels,
+  measuring), OCR, the clipboard, notifications — all through permissions. A plugin is a folder or a `.sfplugin` archive
+  with `plugin.toml` (name, version, author, description, requested permissions) and a script. The built-in editor has
+  a plugin list, highlighted code, templates ("Hello", "Watermark", "Upload to my own server"), a test run on a sample
+  picture with an error/output console, enable/disable and export/import of `.sfplugin`. Installing shows exactly what
+  the plugin asks for; if its permissions change, it stops until you approve them again. A plugin cannot read upload
+  tokens. Details and examples: [docs/PLUGINS.md](docs/PLUGINS.md); three ready plugins live in [`plugins/`](plugins).
 - **UI language:** Russian by default, English in the settings.
-- **`snapforge-cli`:** `capture --region X,Y,W,H | --screen | --monitor N | --window`, `monitors`,
-  `history list|clear`.
+- **`snapforge-cli`:** `capture --region X,Y,W,H | --screen | --monitor N | --window`, `monitors`, `ocr <file>`,
+  `plugin list`, `plugin run <plugin> --image file --hook name`, `history list|clear`.
+
+| A plugin with permissions and a test run | The after-capture review |
+| --- | --- |
+| ![Plugin](docs/screenshots/08-plugins-upload.png) | ![Review](docs/screenshots/04-review.png) |
 
 | After capture | Charts in the editor |
 | --- | --- |
@@ -64,7 +77,7 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
 | --- | --- |
 | ![Home](docs/screenshots/01-home.png) | ![History](docs/screenshots/02-history.png) |
 
-![Settings: uploads and after capture](docs/screenshots/09-settings-uploads.png)
+![Settings: uploads and after capture](docs/screenshots/11-settings-uploads.png)
 
 ## Installation
 
@@ -122,8 +135,9 @@ Needs Rust stable (edition 2024) and Windows with MSVC. The full set of release 
 crates/core   all logic without UI: capture, monitor geometry, editor, history, settings, hotkeys
 crates/app    egui GUI + installer, auto-update, tray, diagnostics, demo mode
 crates/cli    snapforge-cli
+plugins/      three ready plugins (Hello, Watermark, Custom Upload)
 scripts/      build and release, self-signed certificate, icon
-docs/         screenshots, release notes
+docs/         PLUGINS.md, screenshots, release notes
 ```
 
 ## License

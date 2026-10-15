@@ -16,13 +16,15 @@ const SETTLE: Duration = Duration::from_millis(900);
 /// The review step waits for OCR (slower in a debug build).
 const SETTLE_REVIEW: Duration = Duration::from_millis(3500);
 
-pub const STEPS: [&str; 9] = [
+pub const STEPS: [&str; 11] = [
     "home",
     "history",
     "post",
     "review",
     "editor",
     "chart",
+    "plugins",
+    "plugins-upload",
     "settings",
     "settings-post",
     "settings-uploads",
@@ -120,6 +122,19 @@ impl App {
                 es.tool = Tool::Select;
                 self.editor = Some(es);
                 self.view = View::Editor;
+            }
+            "plugins" => {
+                self.pending = None;
+                self.view = View::Plugins;
+                self.plugin_select(Some("watermark".into()));
+                self.plugins.run_fn = "action_mark".into();
+                self.plugin_test_run(ctx, "watermark");
+            }
+            "plugins-upload" => {
+                self.plugin_select(Some("custom-upload".into()));
+                self.plugins.run_fn = "action_upload".into();
+                self.plugins.console.clear();
+                self.plugin_test_run(ctx, "custom-upload");
             }
             "settings-post" => {
                 self.view = View::Settings;

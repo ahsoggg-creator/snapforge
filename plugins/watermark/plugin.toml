@@ -1,0 +1,8 @@
+name = "Watermark"
+version = "1.0.0"
+author = "SnapForge"
+description = "Adds a text watermark to every picture before it is saved, and offers it as an after-capture action"
+main = "main.rhai"
+
+# No permissions: the plugin only edits the picture it is given.
+[permissions]
