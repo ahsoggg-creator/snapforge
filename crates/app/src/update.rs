@@ -53,8 +53,11 @@ fn agent() -> ureq::Agent {
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::NativeTls)
         .build();
-    ureq::Agent::config_builder()
-        .tls_config(tls)
+    let builder = ureq::Agent::config_builder().tls_config(tls);
+    // tests talk to 127.0.0.1: never through a system proxy (real runs keep ureq's environment proxy handling)
+    #[cfg(test)]
+    let builder = builder.proxy(None);
+    builder
         // the exe is tens of megabytes: a slow link must not abort the download (it is checked by SHA-256 anyway)
         .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
@@ -175,7 +178,11 @@ pub fn swap_in(new: &Path, target: &Path) -> Result<(), String> {
 }
 
 fn download(rel: &Release, state: &Shared, repaint: &dyn Fn()) -> Result<(), String> {
-    let exe = target_exe()?;
+    download_to(rel, state, repaint, &target_exe()?)
+}
+
+/// Downloads, verifies and swaps in the new exe in place of `exe`.
+fn download_to(rel: &Release, state: &Shared, repaint: &dyn Fn(), exe: &Path) -> Result<(), String> {
     let tmp = exe.with_extension("exe.download");
     let sums_text = agent()
         .get(&rel.sum_url)
@@ -220,7 +227,7 @@ fn download(rel: &Release, state: &Shared, repaint: &dyn Fn()) -> Result<(), Str
         let _ = std::fs::remove_file(&tmp);
         return Err("the SHA-256 of the download does not match SHA256SUMS.txt; the file was discarded".into());
     }
-    swap_in(&tmp, &exe)
+    swap_in(&tmp, exe)
 }
 
 /// Checks for a newer release. With `auto_install` it also downloads, verifies and swaps the exe.
@@ -337,6 +344,122 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         std::fs::remove_file(&p).unwrap();
+    }
+
+    /// Serves `files` (`path -> bytes`) on a local port, one connection per request.
+    fn serve(files: Vec<(&'static str, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let n = files.len();
+        let h = std::thread::spawn(move || {
+            for _ in 0..n {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                // read the rest of the request head first: closing with unread data would reset the connection
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap() == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                let body = files.iter().find(|(p, _)| *p == path).map(|(_, b)| b.clone());
+                let (status, body) = match body {
+                    Some(b) => ("200 OK", b),
+                    None => ("404 Not Found", Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                sock.write_all(head.as_bytes()).unwrap();
+                sock.write_all(&body).unwrap();
+            }
+        });
+        (base, h)
+    }
+
+    fn release(base: &str) -> Release {
+        Release {
+            version: "9.9.9".into(),
+            page: base.into(),
+            exe_url: format!("{base}/SnapForge.exe"),
+            exe_size: 0,
+            sum_url: format!("{base}/SHA256SUMS.txt"),
+        }
+    }
+
+    #[test]
+    fn a_verified_download_replaces_the_exe_and_keeps_the_old_one() {
+        let dir = std::env::temp_dir().join(format!("sf-upd-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("SnapForge.exe");
+        std::fs::write(&exe, b"old version").unwrap();
+        let new = b"the brand new executable".to_vec();
+        let sum = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(&new)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let (base, srv) = serve(vec![
+            ("/SHA256SUMS.txt", format!("{sum}  SnapForge.exe\n").into_bytes()),
+            ("/SnapForge.exe", new.clone()),
+        ]);
+        let state: Shared = Arc::new(Mutex::new(State::Idle));
+        download_to(&release(&base), &state, &|| {}, &exe).expect("update");
+        srv.join().unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), new);
+        assert_eq!(std::fs::read(exe.with_extension("exe.old")).unwrap(), b"old version");
+        assert!(!exe.with_extension("exe.download").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_download_with_a_wrong_hash_is_discarded_and_nothing_changes() {
+        let dir = std::env::temp_dir().join(format!("sf-upd-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("SnapForge.exe");
+        std::fs::write(&exe, b"old version").unwrap();
+        let (base, srv) = serve(vec![
+            (
+                "/SHA256SUMS.txt",
+                format!("{}  SnapForge.exe\n", "0".repeat(64)).into_bytes(),
+            ),
+            ("/SnapForge.exe", b"tampered executable".to_vec()),
+        ]);
+        let state: Shared = Arc::new(Mutex::new(State::Idle));
+        let err = download_to(&release(&base), &state, &|| {}, &exe).unwrap_err();
+        srv.join().unwrap();
+        assert!(err.contains("SHA-256"), "{err}");
+        assert_eq!(
+            std::fs::read(&exe).unwrap(),
+            b"old version",
+            "the running exe is untouched"
+        );
+        assert!(!exe.with_extension("exe.download").exists(), "the bad file is deleted");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_sums_file_without_the_exe_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("sf-upd-nosum-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("SnapForge.exe");
+        std::fs::write(&exe, b"old").unwrap();
+        let (base, srv) = serve(vec![(
+            "/SHA256SUMS.txt",
+            format!("{}  other.exe\n", "a".repeat(64)).into_bytes(),
+        )]);
+        let state: Shared = Arc::new(Mutex::new(State::Idle));
+        assert!(download_to(&release(&base), &state, &|| {}, &exe).is_err());
+        srv.join().unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
