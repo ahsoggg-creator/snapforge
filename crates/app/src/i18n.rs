@@ -22,13 +22,13 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("act.monitor_n", "Монитор", "Monitor"),
     (
         "sel.hint_region",
-        "Выделите область · стрелки двигают курсор на 1 пиксель (Shift — на 10) · Enter — начать/подтвердить · Esc или правая кнопка — отмена",
-        "Drag to select · arrow keys move the cursor by 1 px (Shift: 10) · Enter starts/confirms · Esc or right click cancels",
+        "Выделите область · один щелчок — весь экран · стрелки двигают курсор на 1 пиксель (Shift — на 10) · Enter — начать/подтвердить · Esc или правая кнопка — отмена",
+        "Drag to select · one click takes the whole screen · arrow keys move the cursor by 1 px (Shift: 10) · Enter starts/confirms · Esc or right click cancels",
     ),
     (
         "sel.hint_window",
-        "Наведите на окно и щёлкните · Esc или правая кнопка — отмена",
-        "Hover a window and click · Esc or right click cancels",
+        "Наведите на окно и щёлкните (мимо окон — весь экран) · Esc или правая кнопка — отмена",
+        "Hover a window and click (click beside the windows for the whole screen) · Esc or right click cancels",
     ),
     (
         "sel.hint_screen",
@@ -428,6 +428,100 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("otool.step", "Метка с номером", "Numbered marker"),
     ("otool.blur", "Размытие", "Blur"),
     ("otool.pixelate", "Пикселизация", "Pixelate"),
+    (
+        "otool.select",
+        "Выбрать: двигать, менять размер, удалить нарисованное",
+        "Select: move, resize or delete what you drew",
+    ),
+    (
+        "otool.spotlight",
+        "Затемнить всё вокруг выделенного",
+        "Dim everything around the selected area",
+    ),
+    (
+        "otool.eraser",
+        "Ластик (стирает нарисованное)",
+        "Eraser (wipes what you drew)",
+    ),
+    (
+        "otool.picker",
+        "Пипетка: взять цвет с экрана",
+        "Picker: take a colour from the screen",
+    ),
+    ("otool.redo", "Вернуть", "Redo"),
+    ("otool.fill", "Заливка рамок и эллипсов", "Fill rectangles and ellipses"),
+    (
+        "sel.hint_select",
+        "Щёлкните по нарисованному · тяните — двигать · за квадратики — менять размер · Delete — удалить · Esc — снять выбор",
+        "Click what you drew · drag to move · drag the squares to resize · Delete removes · Esc deselects",
+    ),
+    (
+        "sel.hint_eraser",
+        "Проведите по нарисованному, чтобы стереть · Ctrl+Z вернёт · правая кнопка — отмена",
+        "Drag over what you drew to wipe it · Ctrl+Z brings it back · right click cancels",
+    ),
+    (
+        "sel.hint_picker",
+        "Щёлкните по любой точке экрана — этот цвет станет цветом рисования",
+        "Click any point of the screen — its colour becomes the drawing colour",
+    ),
+    (
+        "set.ov_tools",
+        "Инструменты на панели (снятая галочка прячет кнопку, клавиша продолжает работать):",
+        "Tools on the toolbar (unticking hides the button, its key keeps working):",
+    ),
+    ("set.ov_palette", "Цвета на панели:", "Toolbar colours:"),
+    ("set.ov_palette_add", "+ цвет", "+ colour"),
+    ("set.ov_palette_reset", "Цвета по умолчанию", "Default colours"),
+    (
+        "set.ov_click",
+        "Один щелчок без выделения:",
+        "A single click without dragging:",
+    ),
+    (
+        "set.ov_click_monitor",
+        "весь монитор под курсором",
+        "the whole monitor under the cursor",
+    ),
+    ("set.ov_click_all", "все мониторы сразу", "all monitors together"),
+    (
+        "set.ov_click_window",
+        "окно под курсором",
+        "the window under the cursor",
+    ),
+    (
+        "set.ov_click_nothing",
+        "ничего (только выделение мышью)",
+        "nothing (only dragging selects)",
+    ),
+    ("set.ov_toolbar", "Панель инструментов:", "Toolbar position:"),
+    ("set.ov_top", "вверху", "top"),
+    ("set.ov_bottom", "внизу", "bottom"),
+    (
+        "set.ov_dim",
+        "Затемнение невыбранной части экрана",
+        "Darkening of the part of the screen that is not selected",
+    ),
+    (
+        "set.ov_magnifier",
+        "Лупа с цветом пикселя у курсора",
+        "Magnifier with the pixel colour next to the cursor",
+    ),
+    (
+        "set.ov_fill",
+        "Новые рамки и эллипсы — с заливкой",
+        "New rectangles and ellipses are filled",
+    ),
+    (
+        "set.post_review",
+        "Показывать проверку найденных лиц и текста перед скрытием (иначе всё найденное закрывается сразу; сообщение об ошибке покажется в любом случае)",
+        "Show the review of found faces and text before hiding them (otherwise everything found is hidden at once; an error is always shown)",
+    ),
+    (
+        "set.post_restore",
+        "Возвращать окно SnapForge после снимка, если оно было открыто (при выключенной панели «после снимка»)",
+        "Bring the SnapForge window back after a shot if it was open (when the after-capture panel is off)",
+    ),
     ("otool.undo", "Отменить", "Undo"),
     ("otool.cancel", "Отмена", "Cancel"),
     (

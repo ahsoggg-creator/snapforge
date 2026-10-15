@@ -118,6 +118,12 @@ impl Default for PostOptions {
 pub struct PostSettings {
     /// Show the "after capture" panel for every shot. Off = run the active preset immediately.
     pub show_panel: bool,
+    /// Show the review screen (found faces and sensitive text, to untick false hits) before they are hidden.
+    /// Off = everything found is hidden without asking. A missing model or OCR language is always shown.
+    pub review_findings: bool,
+    /// The main window was open before the capture: bring it back afterwards (only when the shot is handled
+    /// without the panel).
+    pub restore_window: bool,
     pub presets: Vec<Preset>,
     pub active: usize,
     pub options: PostOptions,
@@ -136,6 +142,8 @@ impl Default for PostSettings {
         };
         PostSettings {
             show_panel: true,
+            review_findings: true,
+            restore_window: false,
             presets: vec![
                 p("Editor", &|x| x.open_editor = true),
                 p("Save + clipboard", &|x| {

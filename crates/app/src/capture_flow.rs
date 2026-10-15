@@ -11,7 +11,7 @@ use snapforge_core::editor::{Document, Object};
 use snapforge_core::geometry::{Rect, virtual_bounds};
 use snapforge_core::hotkey::{self, HotAction};
 use snapforge_core::record::Finished;
-use snapforge_core::settings::OverlayTool;
+use snapforge_core::settings::{OverlayTool, ToolbarPos};
 
 use crate::selector::{self, Outcome};
 use crate::{App, View, demo, editor_ui::EditorState};
@@ -57,6 +57,7 @@ pub struct OverlayMemory {
     pub color: [u8; 4],
     pub width: f32,
     pub privacy: bool,
+    pub fill: bool,
 }
 
 /// Texts and options of the overlay, prepared on the UI thread (translated).
@@ -77,6 +78,7 @@ pub struct OverlaySetup {
     pub screens_overlay: bool,
     pub screen_hint: String,
     pub record_hint: String,
+    pub opts: selector::OverlayOpts,
 }
 
 /// Our own process name must not become the `{app}` part of a file name.
@@ -171,6 +173,7 @@ fn grab(
         privacy: setup.privacy,
         screen_target,
         capture_only: false,
+        opts: setup.opts.clone(),
     };
     let Some(Outcome {
         rect,
@@ -179,11 +182,17 @@ fn grab(
         width,
         tool,
         privacy,
+        fill,
     }) = selector::run(req)
     else {
         return Ok((None, None, None));
     };
-    let memory = Some(OverlayMemory { color, width, privacy });
+    let memory = Some(OverlayMemory {
+        color,
+        width,
+        privacy,
+        fill,
+    });
     let base = capture::crop_piece(&frozen.image, bounds, rect);
     let app = windows
         .iter()
@@ -222,6 +231,7 @@ pub fn pick_area(setup: OverlaySetup) -> Result<Option<Rect>, String> {
         privacy: false,
         screen_target: None,
         capture_only: true,
+        opts: setup.opts,
     };
     Ok(selector::run(req).map(|o| o.rect))
 }
@@ -245,6 +255,10 @@ impl App {
                 OverlayTool::Step => "otool.step",
                 OverlayTool::Blur => "otool.blur",
                 OverlayTool::Pixelate => "otool.pixelate",
+                OverlayTool::Select => "otool.select",
+                OverlayTool::Spotlight => "otool.spotlight",
+                OverlayTool::Eraser => "otool.eraser",
+                OverlayTool::Picker => "otool.picker",
             }
         };
         OverlaySetup {
@@ -275,6 +289,20 @@ impl App {
             screens_overlay: s.overlay_for_screens,
             screen_hint: self.t("sel.hint_screen").to_owned(),
             record_hint: self.t("sel.hint_record").to_owned(),
+            opts: selector::OverlayOpts {
+                hidden: s.overlay_hidden_tools.clone(),
+                palette: s.overlay_palette.clone(),
+                fill: s.overlay_fill,
+                click: s.overlay_click,
+                bottom: s.overlay_toolbar == ToolbarPos::Bottom,
+                dim: s.overlay_dim,
+                magnifier: s.overlay_magnifier,
+                redo_label: self.t("otool.redo").to_owned(),
+                fill_label: self.t("otool.fill").to_owned(),
+                select_hint: self.t("sel.hint_select").to_owned(),
+                eraser_hint: self.t("sel.hint_eraser").to_owned(),
+                picker_hint: self.t("sel.hint_picker").to_owned(),
+            },
         }
     }
 
@@ -395,10 +423,15 @@ impl App {
     fn remember_overlay(&mut self, memory: Option<OverlayMemory>) {
         if let Some(m) = memory {
             let s = &mut self.settings;
-            if s.overlay_color != m.color || s.overlay_width != m.width || s.overlay_privacy != m.privacy {
+            if s.overlay_color != m.color
+                || s.overlay_width != m.width
+                || s.overlay_privacy != m.privacy
+                || s.overlay_fill != m.fill
+            {
                 s.overlay_color = m.color;
                 s.overlay_width = m.width;
                 s.overlay_privacy = m.privacy;
+                s.overlay_fill = m.fill;
                 self.save_settings();
             }
         }
