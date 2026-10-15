@@ -21,6 +21,39 @@ pub const REPO_URL: &str = "https://github.com/ahsoggg-creator/snapforge";
 const UNINSTALL_PARENT: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
+/// Plays the capture sound without waiting for it (a missing or broken file is silently skipped).
+pub fn play_capture_sound(kind: snapforge_core::settings::CaptureSound, file: Option<&Path>) {
+    use snapforge_core::settings::CaptureSound;
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_MEMORY, SND_NODEFAULT};
+    static CLICK: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    match kind {
+        CaptureSound::Off => {}
+        CaptureSound::Click => {
+            let buf = CLICK.get_or_init(snapforge_core::shutter::wav);
+            // SAFETY: with SND_MEMORY the buffer must outlive the sound; this one is a static.
+            unsafe {
+                let _ = PlaySoundW(
+                    PCWSTR(buf.as_ptr().cast()),
+                    None,
+                    SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+                );
+            }
+        }
+        CaptureSound::Custom => {
+            if let Some(f) = file.filter(|f| f.is_file()) {
+                let path = wide(&f.to_string_lossy());
+                // played to the end on its own thread, so the path stays valid for as long as the call needs it
+                std::thread::spawn(move || {
+                    // SAFETY: `path` is NUL-terminated and owned by this thread.
+                    unsafe {
+                        let _ = PlaySoundW(PCWSTR(path.as_ptr()), None, SND_FILENAME | SND_NODEFAULT);
+                    }
+                });
+            }
+        }
+    }
+}
+
 /// Sub-key name of the "Apps & features" entry (a test overrides it so a real installation is never touched).
 fn uninstall_name() -> String {
     std::env::var("SNAPFORGE_UNINSTALL_NAME").unwrap_or_else(|_| APP_NAME.to_owned())

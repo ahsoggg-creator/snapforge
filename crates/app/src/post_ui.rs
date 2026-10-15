@@ -481,6 +481,7 @@ impl App {
                             ui.colored_label(theme::WARN, t("post.model_missing"));
                         }
                     });
+                    ui.checkbox(&mut pr.beautify, t("post.beautify"));
                     ui.checkbox(&mut pr.watermark, t("post.watermark"));
                     ui.checkbox(&mut pr.downscale, t("post.downscale"));
                     for e in &plugin_actions {

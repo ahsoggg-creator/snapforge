@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
-use crate::editor::{Document, Pt, Shape};
+use crate::editor::{Beautify, Document, Pt, Shape};
 use crate::geometry::Rect;
 use crate::imageops::{self, Corner};
 use crate::sensitive::{self, OcrData};
@@ -29,6 +29,8 @@ pub struct Preset {
     pub trim_margins: bool,
     pub watermark: bool,
     pub downscale: bool,
+    /// Put the picture on a gradient with rounded corners and a shadow (see `PostOptions::beautify`).
+    pub beautify: bool,
     /// Plugin actions to run on the picture, as `plugin-id/action-id`.
     pub plugin_actions: Vec<String>,
 }
@@ -47,6 +49,7 @@ impl Default for Preset {
             trim_margins: false,
             watermark: false,
             downscale: false,
+            beautify: false,
             plugin_actions: Vec::new(),
         }
     }
@@ -68,6 +71,7 @@ impl Preset {
             || self.trim_margins
             || self.watermark
             || self.downscale
+            || self.beautify
             || !self.plugin_actions.is_empty()
     }
 }
@@ -92,6 +96,8 @@ pub struct PostOptions {
     pub downscale_percent: u32,
     pub trim_tolerance: u8,
     pub hide_style: HideStyle,
+    /// The look used by the "beautify" step (and offered first in the editor's frame dialog).
+    pub beautify: Beautify,
     /// OCR language tag; `None` = the user's Windows languages.
     pub ocr_language: Option<String>,
     pub face_threshold: f32,
@@ -107,6 +113,7 @@ impl Default for PostOptions {
             downscale_percent: 50,
             trim_tolerance: 8,
             hide_style: HideStyle::Pixelate,
+            beautify: Beautify::default(),
             ocr_language: None,
             face_threshold: 0.5,
         }
@@ -269,7 +276,7 @@ fn corners(r: &Rect) -> (Pt, Pt) {
 }
 
 /// Applies the approved redactions and the picture-wide steps, in a fixed order:
-/// faces → sensitive text → trim margins → watermark → downscale.
+/// faces → sensitive text → trim margins → beautify → watermark → downscale.
 pub fn transform(img: &RgbaImage, preset: &Preset, opts: &PostOptions, approved: &Approved) -> RgbaImage {
     let mut d = Document::new(img.clone());
     let ink = [0, 0, 0, 255];
@@ -318,6 +325,9 @@ pub fn transform(img: &RgbaImage, preset: &Preset, opts: &PostOptions, approved:
     let mut out = d.render();
     if preset.trim_margins {
         out = imageops::trim_margins(&out, opts.trim_tolerance, 6);
+    }
+    if preset.beautify {
+        out = crate::editor::render::beautify(&out, &opts.beautify);
     }
     if preset.watermark {
         let logo = opts
@@ -532,6 +542,54 @@ mod tests {
         // everything approved: the face is redacted too
         let all = transform(&img, &p, &PostOptions::default(), &Approved::all(&f));
         assert_ne!(face_area(&all), face_area(&img));
+    }
+
+    #[test]
+    fn beautify_wraps_the_redacted_picture_in_the_chosen_frame() {
+        let img = checker(120, 80);
+        let p = Preset {
+            beautify: true,
+            hide_sensitive: true,
+            ..Preset::default()
+        };
+        let mut o = PostOptions::default();
+        o.beautify.padding = 30;
+        o.beautify.chrome = crate::editor::Chrome::Dark;
+        let bar = o.beautify.bar_height(120);
+        let a = Approved {
+            faces: vec![],
+            sensitive: vec![Rect::new(10, 10, 100, 40)],
+        };
+        let out = transform(&img, &p, &o, &a);
+        assert_eq!(out.dimensions(), (120 + 60, 80 + bar + 60));
+        let plain = transform(
+            &img,
+            &Preset {
+                beautify: false,
+                ..p.clone()
+            },
+            &o,
+            &a,
+        );
+        assert_eq!(
+            plain.dimensions(),
+            (120, 80),
+            "the step is off unless the preset asks for it"
+        );
+        let inner =
+            |i: &RgbaImage, dx: u32, dy: u32| (20..100).map(|x| i.get_pixel(x + dx, 30 + dy).0[0]).collect::<Vec<_>>();
+        assert_eq!(
+            inner(&out, 30, 30 + bar),
+            inner(&plain, 0, 0),
+            "the redaction sits inside the frame"
+        );
+        assert!(
+            Preset {
+                beautify: true,
+                ..Preset::default()
+            }
+            .any_action()
+        );
     }
 
     #[test]

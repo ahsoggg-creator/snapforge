@@ -125,6 +125,20 @@ pub enum ToolbarPos {
     Bottom,
 }
 
+/// What plays when a screenshot is taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSound {
+    #[default]
+    Off,
+    /// A short camera-shutter click made by `shutter::wav` (no file needed).
+    Click,
+    /// The WAV file chosen in `Settings::capture_sound_file`.
+    Custom,
+}
+
+pub const DEFAULT_OVERLAY_ACCENT: [u8; 4] = [96, 165, 250, 255];
+
 /// The colours offered in the overlay's toolbar.
 pub fn default_overlay_palette() -> Vec<[u8; 4]> {
     vec![
@@ -205,6 +219,14 @@ pub struct Settings {
     pub overlay_dim: u8,
     /// The magnifier with the pixel colour next to the cursor.
     pub overlay_magnifier: bool,
+    /// Thin lines across the whole screen through the cursor while you pick what to capture.
+    pub overlay_crosshair: bool,
+    /// Rule-of-thirds grid inside the selected area.
+    pub overlay_thirds: bool,
+    /// Colour of the selection frame and the active buttons.
+    pub overlay_accent: [u8; 4],
+    pub capture_sound: CaptureSound,
+    pub capture_sound_file: Option<PathBuf>,
     /// Screen recording: frames per second (15, 24, 30 or 60) and whether the mouse cursor is drawn into the video.
     pub video_fps: u32,
     pub video_cursor: bool,
@@ -244,6 +266,11 @@ impl Default for Settings {
             overlay_toolbar: ToolbarPos::Top,
             overlay_dim: 60,
             overlay_magnifier: true,
+            overlay_crosshair: false,
+            overlay_thirds: false,
+            overlay_accent: DEFAULT_OVERLAY_ACCENT,
+            capture_sound: CaptureSound::Off,
+            capture_sound_file: None,
             video_fps: 30,
             video_cursor: true,
         }
@@ -287,6 +314,10 @@ impl Settings {
         self.post.sanitize();
         self.overlay_width = self.overlay_width.clamp(1.0, 24.0);
         self.overlay_dim = self.overlay_dim.min(90);
+        self.overlay_accent[3] = 255;
+        if self.capture_sound == CaptureSound::Custom && self.capture_sound_file.is_none() {
+            self.capture_sound = CaptureSound::Click;
+        }
         self.overlay_palette.truncate(10);
         if self.overlay_palette.is_empty() {
             self.overlay_palette = default_overlay_palette();
@@ -349,6 +380,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_new_look_and_sound_options_have_safe_defaults() {
+        let s: Settings = serde_json::from_str(r#"{"overlay_dim":40}"#).unwrap();
+        assert_eq!(s.overlay_dim, 40);
+        assert!(!s.overlay_crosshair && !s.overlay_thirds);
+        assert_eq!(s.overlay_accent, DEFAULT_OVERLAY_ACCENT);
+        assert_eq!(s.capture_sound, CaptureSound::Off);
+        let mut s = Settings {
+            capture_sound: CaptureSound::Custom,
+            overlay_accent: [1, 2, 3, 0],
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(s.capture_sound, CaptureSound::Click, "a custom sound needs a file");
+        assert_eq!(s.overlay_accent, [1, 2, 3, 255]);
+    }
 
     #[test]
     fn a_profile_from_an_older_version_gets_the_new_actions() {

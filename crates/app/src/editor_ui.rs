@@ -873,7 +873,7 @@ impl App {
                     es.resize_pct = Some(100);
                 }
                 if ui.button(t("ed.frame")).clicked() {
-                    es.frame = Some(snapforge_core::editor::Beautify::default());
+                    es.frame = Some(self.settings.post.options.beautify.clone());
                 }
                 ui.separator();
                 let busy = self.protect_rx.is_some();
@@ -1258,6 +1258,82 @@ pub enum OcrState {
     Done(Result<String, String>),
 }
 
+/// A small two-colour swatch; clicking it picks that background.
+fn gradient_swatch(ui: &mut Ui, top: [u8; 4], bottom: [u8; 4], selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 22.0), Sense::click());
+    let c = |p: [u8; 4]| Color32::from_rgb(p[0], p[1], p[2]);
+    let mut mesh = egui::Mesh::default();
+    let uv = egui::epaint::WHITE_UV;
+    for (pos, col) in [
+        (rect.left_top(), c(top)),
+        (rect.right_top(), c(top)),
+        (rect.right_bottom(), c(bottom)),
+        (rect.left_bottom(), c(bottom)),
+    ] {
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: col });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    ui.painter().add(egui::Shape::mesh(mesh));
+    let edge = if selected {
+        Stroke::new(2.0, theme::ACCENT)
+    } else if resp.hovered() {
+        Stroke::new(1.5, Color32::WHITE)
+    } else {
+        Stroke::new(1.0, Color32::from_black_alpha(90))
+    };
+    ui.painter().rect_stroke(rect, 4.0, edge, StrokeKind::Inside);
+    resp
+}
+
+/// The controls of a frame (background, angle, corners, shadow, title bar). Returns true when something changed.
+pub fn beautify_controls(
+    ui: &mut Ui,
+    o: &mut snapforge_core::editor::Beautify,
+    t: &dyn Fn(&'static str) -> &'static str,
+) -> bool {
+    use snapforge_core::editor::{BEAUTIFY_PRESETS, Chrome};
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(t("ed.frame_preset"));
+        for (i, (key, top, bottom, angle)) in BEAUTIFY_PRESETS.iter().enumerate() {
+            let on = o.top == *top && o.bottom == *bottom && o.angle == *angle;
+            if gradient_swatch(ui, *top, *bottom, on).on_hover_text(t(key)).clicked() {
+                *o = o.with_preset(i);
+                changed = true;
+            }
+        }
+    });
+    changed |= ui
+        .add(egui::Slider::new(&mut o.padding, 0..=200).text(t("ed.frame_pad")))
+        .changed();
+    changed |= ui
+        .add(egui::Slider::new(&mut o.radius, 0..=60).text(t("ed.frame_radius")))
+        .changed();
+    changed |= ui
+        .add(egui::Slider::new(&mut o.angle, 0..=359).text(t("ed.frame_angle")))
+        .changed();
+    changed |= ui.checkbox(&mut o.shadow, t("ed.frame_shadow")).changed();
+    ui.horizontal(|ui| {
+        ui.label(t("ed.frame_top"));
+        changed |= ui.color_edit_button_srgba_unmultiplied(&mut o.top).changed();
+        ui.label(t("ed.frame_bottom"));
+        changed |= ui.color_edit_button_srgba_unmultiplied(&mut o.bottom).changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label(t("ed.frame_chrome"));
+        for (c, key) in [
+            (Chrome::None, "chrome.none"),
+            (Chrome::Dark, "chrome.dark"),
+            (Chrome::Light, "chrome.light"),
+        ] {
+            changed |= ui.selectable_value(&mut o.chrome, c, t(key)).changed();
+        }
+    });
+    o.top[3] = 255;
+    o.bottom[3] = 255;
+    changed
+}
+
 fn frame_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'static str) -> &'static str) {
     let Some(mut o) = es.frame.take() else { return };
     let (mut apply, mut cancel) = (false, false);
@@ -1266,15 +1342,7 @@ fn frame_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'stati
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.add(egui::Slider::new(&mut o.padding, 0..=200).text(t("ed.frame_pad")));
-            ui.add(egui::Slider::new(&mut o.radius, 0..=60).text(t("ed.frame_radius")));
-            ui.checkbox(&mut o.shadow, t("ed.frame_shadow"));
-            ui.horizontal(|ui| {
-                ui.label(t("ed.frame_top"));
-                ui.color_edit_button_srgba_unmultiplied(&mut o.top);
-                ui.label(t("ed.frame_bottom"));
-                ui.color_edit_button_srgba_unmultiplied(&mut o.bottom);
-            });
+            beautify_controls(ui, &mut o, t);
             ui.horizontal(|ui| {
                 if theme::primary_button(ui, t("ed.frame_apply")).clicked() {
                     apply = true;
@@ -1285,8 +1353,6 @@ fn frame_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'stati
             });
         });
     if apply {
-        o.top[3] = 255;
-        o.bottom[3] = 255;
         es.apply_frame(&o);
     } else if !cancel {
         es.frame = Some(o);
