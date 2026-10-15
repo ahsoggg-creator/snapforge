@@ -7,7 +7,7 @@ use eframe::egui::{
     Ui, vec2,
 };
 use snapforge_core::RgbaImage;
-use snapforge_core::editor::{DEFAULT_COLOR, DEFAULT_WIDTH, Editor, Pt, Shape};
+use snapforge_core::editor::{ChartKind, ChartSpec, DEFAULT_COLOR, DEFAULT_WIDTH, Editor, Pt, Shape};
 use snapforge_core::geometry::Rect;
 use snapforge_core::{diag, naming, output};
 
@@ -27,11 +27,12 @@ pub enum Tool {
     Blur,
     Pixelate,
     Step,
+    Chart,
     Eraser,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Select,
         Tool::Crop,
         Tool::Arrow,
@@ -44,6 +45,7 @@ impl Tool {
         Tool::Blur,
         Tool::Pixelate,
         Tool::Step,
+        Tool::Chart,
         Tool::Eraser,
     ];
 
@@ -61,6 +63,7 @@ impl Tool {
             Tool::Blur => "tool.blur",
             Tool::Pixelate => "tool.pixelate",
             Tool::Step => "tool.step",
+            Tool::Chart => "tool.chart",
             Tool::Eraser => "tool.eraser",
         }
     }
@@ -95,6 +98,14 @@ pub struct EditorState {
     style_checkpointed: bool,
     text_checkpointed: bool,
     focus_text: bool,
+    pub chart_dialog: Option<ChartDialog>,
+}
+
+/// Data editor for a chart object (opened after drawing one, or from the properties panel).
+pub struct ChartDialog {
+    pub id: u64,
+    pub spec: ChartSpec,
+    pub error: Option<String>,
 }
 
 pub fn pos_to_pt(p: Pos2, origin: Pos2, scale: f32) -> Pt {
@@ -127,6 +138,7 @@ impl EditorState {
             style_checkpointed: false,
             text_checkpointed: false,
             focus_text: false,
+            chart_dialog: None,
         }
     }
 
@@ -230,6 +242,11 @@ impl EditorState {
             Tool::Marker => Shape::Marker { pts: vec![p] },
             Tool::Blur => Shape::Blur { a: p, b: p, radius: 10 },
             Tool::Pixelate => Shape::Pixelate { a: p, b: p, block: 10 },
+            Tool::Chart => Shape::Chart {
+                a: p,
+                b: p,
+                spec: ChartSpec::sample(ChartKind::Bar),
+            },
             _ => return None,
         })
     }
@@ -242,6 +259,7 @@ impl EditorState {
                 | Shape::Rect { b, .. }
                 | Shape::Ellipse { b, .. }
                 | Shape::Blur { b, .. }
+                | Shape::Chart { b, .. }
                 | Shape::Pixelate { b, .. } => *b = p,
                 Shape::Pencil { pts } | Shape::Marker { pts }
                     if pts.last().is_none_or(|l| (l.x - p.x).hypot(l.y - p.y) > 0.8) =>
@@ -262,6 +280,7 @@ impl EditorState {
             | Some(Shape::Ellipse { a, b, .. })
             | Some(Shape::Blur { a, b, .. })
             | Some(Shape::Pixelate { a, b, .. }) => (a.x - b.x).abs() < 3.0 || (a.y - b.y).abs() < 3.0,
+            Some(Shape::Chart { a, b, .. }) => (a.x - b.x).abs() < 60.0 || (a.y - b.y).abs() < 60.0,
             _ => false,
         }
     }
@@ -394,6 +413,12 @@ impl EditorState {
                 self.ed.cancel_checkpoint();
                 self.selected = None;
                 self.dirty = true;
+            }
+            // a freshly drawn chart asks for its data right away
+            if let Gesture::Draw(id) = self.gesture
+                && let Some(Shape::Chart { spec, .. }) = self.ed.doc.get(id).map(|o| o.shape.clone())
+            {
+                self.chart_dialog = Some(ChartDialog { id, spec, error: None });
             }
             self.gesture = Gesture::None;
         }
@@ -566,6 +591,11 @@ impl EditorState {
         }
 
         if let Some(id) = self.selected {
+            if let Some(Shape::Chart { spec, .. }) = self.ed.doc.get(id).map(|o| o.shape.clone())
+                && ui.button(t("ed.chart_edit")).clicked()
+            {
+                self.chart_dialog = Some(ChartDialog { id, spec, error: None });
+            }
             if let Some(Shape::Text { text, .. }) = self.ed.doc.get(id).map(|o| o.shape.clone()) {
                 ui.separator();
                 let mut edited = text.clone();
@@ -631,6 +661,7 @@ impl EditorState {
                             "marker" => "tool.marker",
                             "blur" => "tool.blur",
                             "pixelate" => "tool.pixelate",
+                            "chart" => "tool.chart",
                             _ => "tool.step",
                         })
                     );
@@ -698,6 +729,10 @@ impl App {
                     es.pan = egui::Vec2::ZERO;
                 }
                 ui.separator();
+                if ui.button(t("ed.ocr")).clicked() {
+                    action = Some(EditorAction::Ocr);
+                }
+                ui.separator();
                 if theme::primary_button(ui, t("ed.save")).clicked() {
                     action = Some(EditorAction::Save);
                 }
@@ -749,7 +784,10 @@ impl App {
             es.canvas(ui);
         });
 
+        let ctx = ui.ctx().clone();
+        chart_dialog_ui(&ctx, &mut es, &t);
         self.editor = Some(es);
+        self.ocr_window(&ctx);
         if let Some(a) = action {
             self.run_editor_action(ui.ctx(), a);
         }
@@ -804,6 +842,7 @@ impl App {
             EditorAction::SaveAs => self.editor_save_as(),
             EditorAction::Copy => self.editor_copy(),
             EditorAction::DragOut => self.editor_drag_out(ctx),
+            EditorAction::Ocr => self.editor_ocr(ctx),
         }
     }
 
@@ -914,4 +953,200 @@ pub enum EditorAction {
     SaveAs,
     Copy,
     DragOut,
+    Ocr,
+}
+
+/// OCR window state: running in the background, or finished.
+pub enum OcrState {
+    Running(std::sync::mpsc::Receiver<Result<String, String>>),
+    Done(Result<String, String>),
+}
+
+fn chart_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'static str) -> &'static str) {
+    let Some(mut dlg) = es.chart_dialog.take() else { return };
+    let (mut apply, mut cancel) = (false, false);
+    egui::Window::new(t("chart.title"))
+        .collapsible(false)
+        .resizable(true)
+        .default_width(560.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            let spec = &mut dlg.spec;
+            ui.horizontal(|ui| {
+                ui.label(t("chart.name"));
+                ui.add(egui::TextEdit::singleline(&mut spec.title).desired_width(200.0));
+                ui.label(t("chart.kind"));
+                for (k, key) in [
+                    (ChartKind::Bar, "chart.bar"),
+                    (ChartKind::Line, "chart.line"),
+                    (ChartKind::Pie, "chart.pie"),
+                ] {
+                    ui.selectable_value(&mut spec.kind, k, t(key));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut spec.show_legend, t("chart.legend"));
+                ui.checkbox(&mut spec.show_values, t("chart.values"));
+                if ui.button(t("chart.paste")).clicked() {
+                    let parsed = snapforge_core::output::read_text_from_clipboard()
+                        .map_err(|e| e.to_string())
+                        .and_then(|text| {
+                            snapforge_core::editor::chart::spec_from_table(
+                                &snapforge_core::editor::chart::parse_table(&text),
+                                spec.kind,
+                            )
+                        });
+                    match parsed {
+                        Ok(new) => {
+                            spec.labels = new.labels;
+                            spec.series = new.series;
+                            spec.show_legend = new.show_legend;
+                            dlg.error = None;
+                        }
+                        Err(e) => dlg.error = Some(format!("{}: {e}", t("chart.paste_err"))),
+                    }
+                }
+            });
+            if let Some(e) = &dlg.error {
+                ui.colored_label(theme::BAD, e);
+            }
+            let spec = &mut dlg.spec;
+            egui::ScrollArea::both().max_height(280.0).show(ui, |ui| {
+                egui::Grid::new("chart_grid").spacing([6.0, 4.0]).show(ui, |ui| {
+                    ui.label(egui::RichText::new(t("chart.label")).weak());
+                    for s in &mut spec.series {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut s.name).desired_width(80.0));
+                            ui.color_edit_button_srgba_unmultiplied(&mut s.color);
+                        });
+                    }
+                    ui.end_row();
+                    for i in 0..spec.labels.len() {
+                        ui.add(egui::TextEdit::singleline(&mut spec.labels[i]).desired_width(90.0));
+                        for s in &mut spec.series {
+                            if let Some(v) = s.values.get_mut(i) {
+                                ui.add(egui::DragValue::new(v).speed(0.5));
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                if ui.button(t("chart.add_row")).clicked() {
+                    spec.labels.push(format!("#{}", spec.labels.len() + 1));
+                }
+                if spec.labels.len() > 1 && ui.button(t("chart.del_row")).clicked() {
+                    spec.labels.pop();
+                }
+                if ui.button(t("chart.add_col")).clicked() {
+                    let n = spec.series.len();
+                    let palette = &snapforge_core::editor::chart::PALETTE;
+                    spec.series.push(snapforge_core::editor::Series {
+                        name: format!("{} {}", t("chart.series"), n + 1),
+                        color: palette[n % palette.len()],
+                        values: Vec::new(),
+                    });
+                }
+                if spec.series.len() > 1 && ui.button(t("chart.del_col")).clicked() {
+                    spec.series.pop();
+                }
+            });
+            spec.normalize();
+            ui.separator();
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, t("chart.apply")).clicked() {
+                    apply = true;
+                }
+                if ui.button(t("common.cancel")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if apply {
+        es.ed.checkpoint();
+        if let Some(o) = es.ed.doc.get_mut(dlg.id)
+            && let Shape::Chart { spec, .. } = &mut o.shape
+        {
+            *spec = dlg.spec.clone();
+        }
+        es.selected = Some(dlg.id);
+        es.dirty = true;
+    } else if !cancel {
+        es.chart_dialog = Some(dlg);
+    }
+}
+
+impl App {
+    pub fn editor_ocr(&mut self, ctx: &egui::Context) {
+        let Some((img, _)) = self.flattened() else { return };
+        let lang = self.settings.post.options.ocr_language.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let r = snapforge_core::ocr::recognize(&img, lang.as_deref())
+                .map(|d| d.text)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(r);
+            ctx2.request_repaint();
+        });
+        self.ocr_state = Some(OcrState::Running(rx));
+    }
+
+    pub fn ocr_window(&mut self, ctx: &egui::Context) {
+        let lang = self.settings.language;
+        if let Some(OcrState::Running(rx)) = &self.ocr_state
+            && let Ok(r) = rx.try_recv()
+        {
+            self.ocr_state = Some(OcrState::Done(r));
+        }
+        let mut close = false;
+        let mut copy = None;
+        if let Some(state) = &self.ocr_state {
+            egui::Window::new(crate::i18n::tr(lang, "ocr.title"))
+                .collapsible(false)
+                .default_width(480.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| match state {
+                    OcrState::Running(_) => {
+                        ui.add(egui::Spinner::new().size(24.0).color(theme::ACCENT));
+                        ui.label(crate::i18n::tr(lang, "ocr.running"));
+                        ctx.request_repaint();
+                    }
+                    OcrState::Done(Ok(text)) => {
+                        if text.trim().is_empty() {
+                            ui.label(crate::i18n::tr(lang, "ocr.empty"));
+                        } else {
+                            let mut shown = text.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut shown)
+                                    .desired_rows(8)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            if ui.button(crate::i18n::tr(lang, "ocr.copy")).clicked() {
+                                copy = Some(text.clone());
+                            }
+                        }
+                        if ui.button(crate::i18n::tr(lang, "inst.close")).clicked() {
+                            close = true;
+                        }
+                    }
+                    OcrState::Done(Err(e)) => {
+                        ui.colored_label(theme::BAD, e);
+                        if ui.button(crate::i18n::tr(lang, "inst.close")).clicked() {
+                            close = true;
+                        }
+                    }
+                });
+        }
+        if let Some(text) = copy {
+            match output::copy_text_to_clipboard(&text) {
+                Ok(()) => self.notify(crate::i18n::tr(lang, "ocr.copied"), false),
+                Err(e) => self.notify(e.to_string(), true),
+            }
+        }
+        if close {
+            self.ocr_state = None;
+        }
+    }
 }

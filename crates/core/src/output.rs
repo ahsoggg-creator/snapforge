@@ -79,6 +79,11 @@ pub fn copy_to_clipboard(img: &RgbaImage) -> Result<(), OutputError> {
     .map_err(|e| OutputError::Clipboard(e.to_string()))
 }
 
+pub fn read_text_from_clipboard() -> Result<String, OutputError> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| OutputError::Clipboard(e.to_string()))?;
+    cb.get_text().map_err(|e| OutputError::Clipboard(e.to_string()))
+}
+
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), OutputError> {
     let mut cb = arboard::Clipboard::new().map_err(|e| OutputError::Clipboard(e.to_string()))?;
     cb.set_text(text.to_owned())

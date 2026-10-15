@@ -53,18 +53,35 @@ fn engine(language: Option<&str>) -> Result<OcrEngine, OcrError> {
 
 /// Recognises the text in `img`. `language` is a tag from `available_languages`; `None` uses the user's languages.
 /// Rectangles are in pixels of `img`.
+///
+/// Small interface text is read much better when enlarged, large text is not: so the picture is read at its own
+/// size and, if it is small enough, enlarged 2x as well; the pass that recognised more characters wins (ties go to
+/// the original size).
 pub fn recognize(img: &RgbaImage, language: Option<&str>) -> Result<OcrData, OcrError> {
     let engine = engine(language)?;
-    let max = OcrEngine::MaxImageDimension().unwrap_or(10_000).max(64);
-    // very large pictures are scaled down for the engine and the rectangles scaled back
-    let k = (max as f64 / img.width().max(img.height()) as f64).min(1.0);
+    let max = OcrEngine::MaxImageDimension().unwrap_or(10_000).max(64) as f64;
+    let longest = img.width().max(img.height()) as f64;
+    let base = recognize_at(&engine, img, (1.0_f64).min(max / longest))?;
+    if longest * 2.0 > 3000.0_f64.max(longest) || longest * 2.0 > max {
+        return Ok(base);
+    }
+    let big = recognize_at(&engine, img, 2.0)?;
+    let score = |d: &OcrData| d.text.chars().filter(|c| c.is_alphanumeric()).count();
+    Ok(if score(&big) * 100 > score(&base) * 105 {
+        big
+    } else {
+        base
+    })
+}
+
+fn recognize_at(engine: &OcrEngine, img: &RgbaImage, k: f64) -> Result<OcrData, OcrError> {
     let scaled;
-    let src: &RgbaImage = if k < 1.0 {
+    let src: &RgbaImage = if (k - 1.0).abs() > f64::EPSILON {
         scaled = imageops::resize(
             img,
             ((img.width() as f64 * k) as u32).max(1),
             ((img.height() as f64 * k) as u32).max(1),
-            imageops::FilterType::Triangle,
+            imageops::FilterType::Lanczos3,
         );
         &scaled
     } else {

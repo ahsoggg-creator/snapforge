@@ -140,6 +140,22 @@ pub fn demo_image(seed: usize, w: u32, h: u32) -> RgbaImage {
 mod tests {
     use super::*;
 
+    /// The review screenshot depends on real OCR finding the invented e-mail address and phone number.
+    #[test]
+    fn real_ocr_sees_the_invented_contact_details() {
+        if snapforge_core::ocr::available_languages().is_empty() {
+            return;
+        }
+        let data = snapforge_core::ocr::recognize(&demo_image(2, 1100, 640), None).expect("ocr");
+        eprintln!("OCR of the demo picture: {:?}", data.text);
+        let found = snapforge_core::sensitive::find(&data.lines, 3);
+        assert!(
+            found.len() >= 2,
+            "e-mail and phone are found, got {found:?} in {:?}",
+            data.text
+        );
+    }
+
     #[test]
     fn demo_images_are_deterministic_and_varied() {
         let a = demo_image(0, 640, 400);
