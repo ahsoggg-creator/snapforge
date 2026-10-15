@@ -162,10 +162,12 @@ impl App {
     /// Entry point after a capture: the panel (or the active preset straight away).
     pub fn begin_post(&mut self, ctx: &egui::Context, shot: crate::capture_flow::Shot) {
         let mut preset = self.settings.post.active_preset().clone();
-        if shot.privacy {
-            // the shield in the overlay: hide sensitive text (and faces, when the model is installed) for this shot
+        let shield = shot.privacy;
+        if shield {
+            // the shield in the overlay: hide sensitive text and faces for this shot. A missing face model is
+            // reported on the review screen instead of silently skipping the faces
             preset.hide_sensitive = true;
-            preset.blur_faces = face::model_state() == face::ModelState::Ready;
+            preset.blur_faces = true;
         }
         let editable = shot.base.map(|b| (b, shot.objects)).filter(|(_, o)| !o.is_empty());
         self.pending = Some(Pending {
@@ -185,10 +187,16 @@ impl App {
             show_text: false,
         });
         self.view = View::PostCapture;
-        if !self.settings.post.show_panel {
+        if self.settings.post.show_panel && !shield {
+            self.show_window(ctx);
+        } else {
+            // no panel: run the preset right away. The window comes up only when something needs the user (the
+            // review of found faces, an error, the editor) or when it was open before the capture
             self.post_run(ctx);
+            if self.restore_window {
+                self.show_window(ctx);
+            }
         }
-        self.show_window(ctx);
     }
 
     /// "Run": analysis first when the preset needs it, then the review, then the chain.
@@ -293,6 +301,7 @@ impl App {
             p.analysis_rx = None;
             if p.preset.blur_faces || p.preset.hide_sensitive {
                 p.stage = Stage::Review;
+                self.show_window(ctx);
             } else {
                 self.post_finish(ctx);
             }
@@ -339,6 +348,15 @@ impl App {
                 Err(e) => format!("{} ✖ {e}", self.t(step_key(r.step))),
             })
             .collect();
+        let quiet = !self.settings.post.show_panel && !res.open_editor && failed == 0;
+        if quiet {
+            // nothing to show: the shot was saved/copied as the preset says
+            if self.view == View::PostCapture {
+                self.view = View::Home;
+            }
+            return;
+        }
+        self.show_window(ctx);
         if res.open_editor {
             self.open_editor(ctx, res.output, p.app, history_id);
             if let Some(e) = &mut self.editor {

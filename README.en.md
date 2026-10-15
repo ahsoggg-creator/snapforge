@@ -20,8 +20,10 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.5.0)
+## Features (0.6.0)
 
+- **Editor: more tools (0.6.0).** "Hide faces" and "Hide text" find faces and sensitive text by themselves and cover them with blur as separate layers (move or delete them); "Spotlight" (dims everything around the selection), "Eyedropper", flip horizontally and vertically, resize, "Frame..." (gradient background, padding, rounded corners, shadow). Tools switch with a single key (shown in the list).
+- **After a shot (0.6.0).** The home page picks what happens after a shot and can switch the panel off: the chosen preset then runs silently and no window appears (it comes forward only when your decision is needed, for example to review found faces, or on an error).
 - **Video recording (0.5.0).** A hotkey (Ctrl+Shift+R by default), a tray item or a button on the home page: pick an area, a window or a monitor on the same toolbar, and it records until you press the key again or choose "Stop recording" in the tray. H.264 in MP4 through Media Foundation (nothing to install), 15-60 fps, optional cursor, no sound; at most 4096x2304 (pick a monitor or a region on bigger screens). The file goes to the screenshots folder.
 - **The toolbar for every capture (0.5.0).** The "full screen" and "monitor under the cursor" hotkeys open the overlay with the toolbar too (drawing, blur, "hide sensitive text and faces in one click", faces when the model is installed); it appears on the monitor with the cursor and follows it. Can be switched off in the settings.
 - **Tray (0.5.0).** A left click opens the window, a right click the menu: open, settings, captures, video recording, quit.

@@ -70,6 +70,11 @@ pub enum Shape {
         at: Pt,
         n: u32,
     },
+    /// Dims everything outside the rectangle, so the eye goes to what is inside.
+    Spotlight {
+        a: Pt,
+        b: Pt,
+    },
     /// A chart drawn from a data table; `color` of the object is the text colour (alpha 0 = default).
     Chart {
         a: Pt,
@@ -127,6 +132,17 @@ impl Shape {
             Shape::Pixelate { .. } => "pixelate",
             Shape::Step { .. } => "step",
             Shape::Chart { .. } => "chart",
+            Shape::Spotlight { .. } => "spotlight",
+        }
+    }
+
+    /// Scales every length of the shape by `f` (the picture was resized): widths are handled by the caller.
+    fn scale_params(&mut self, f: f32) {
+        match self {
+            Shape::Text { size, .. } => *size *= f,
+            Shape::Blur { radius, .. } => *radius = ((*radius as f32 * f).round() as u32).max(1),
+            Shape::Pixelate { block, .. } => *block = ((*block as f32 * f).round() as u32).max(2),
+            _ => {}
         }
     }
 
@@ -138,6 +154,7 @@ impl Shape {
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
             | Shape::Chart { a, b, .. }
+            | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b, .. } => vec![a, b],
             Shape::Text { at, .. } | Shape::Step { at, .. } => vec![at],
             Shape::Pencil { pts } | Shape::Marker { pts } => pts.iter_mut().collect(),
@@ -166,6 +183,7 @@ impl Shape {
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
             | Shape::Chart { a, b, .. }
+            | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b, .. } => norm_rect(*a, *b),
             Shape::Text { at, text, size } => {
                 let (w, h) = render::measure_text(text, *size);
@@ -236,6 +254,7 @@ impl Shape {
             }
             Shape::Blur { .. }
             | Shape::Pixelate { .. }
+            | Shape::Spotlight { .. }
             | Shape::Chart { .. }
             | Shape::Text { .. }
             | Shape::Step { .. } => {
@@ -258,6 +277,7 @@ impl Shape {
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
             | Shape::Chart { a, b, .. }
+            | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 vec![lo, Pt::new(hi.x, lo.y), hi, Pt::new(lo.x, hi.y)]
@@ -280,6 +300,7 @@ impl Shape {
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
             | Shape::Chart { a, b, .. }
+            | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 // the opposite corner stays fixed
@@ -380,6 +401,57 @@ impl Document {
         self.base = Arc::new(image::imageops::rotate270(&*self.base));
         for o in &mut self.objects {
             o.shape.map_points(|p| Pt::new(p.y, w - p.x));
+        }
+    }
+
+    /// Mirrors the picture and all objects left-to-right.
+    pub fn flip_horizontal(&mut self) {
+        let w = self.base.width() as f32;
+        self.base = Arc::new(image::imageops::flip_horizontal(&*self.base));
+        for o in &mut self.objects {
+            o.shape.map_points(|p| Pt::new(w - p.x, p.y));
+        }
+    }
+
+    /// Mirrors the picture and all objects top-to-bottom.
+    pub fn flip_vertical(&mut self) {
+        let h = self.base.height() as f32;
+        self.base = Arc::new(image::imageops::flip_vertical(&*self.base));
+        for o in &mut self.objects {
+            o.shape.map_points(|p| Pt::new(p.x, h - p.y));
+        }
+    }
+
+    /// Resizes the picture to `percent` % (1..=400); objects scale with it. Returns false when nothing changes.
+    pub fn resize_percent(&mut self, percent: u32) -> bool {
+        let percent = percent.clamp(1, 400);
+        let (w, h) = self.base.dimensions();
+        let (nw, nh) = ((w * percent / 100).max(1), (h * percent / 100).max(1));
+        if (nw, nh) == (w, h) || nw.max(nh) > 16_000 {
+            return false;
+        }
+        let (fx, fy) = (nw as f32 / w as f32, nh as f32 / h as f32);
+        self.base = Arc::new(image::imageops::resize(
+            &*self.base,
+            nw,
+            nh,
+            image::imageops::FilterType::Lanczos3,
+        ));
+        let f = (fx + fy) / 2.0;
+        for o in &mut self.objects {
+            o.shape.map_points(|p| Pt::new(p.x * fx, p.y * fy));
+            o.shape.scale_params(f);
+            o.width *= f;
+        }
+        true
+    }
+
+    /// Puts the picture on a coloured background with rounded corners and a shadow; objects keep their place on it.
+    pub fn beautify(&mut self, o: &render::Beautify) {
+        let pad = o.padding.min(400) as f32;
+        self.base = Arc::new(render::beautify(&self.base, o));
+        for ob in &mut self.objects {
+            ob.shape.translate(pad, pad);
         }
     }
 
@@ -486,6 +558,121 @@ mod tests {
 
     fn doc(w: u32, h: u32) -> Document {
         Document::new(RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255])))
+    }
+
+    fn arrow_doc() -> Document {
+        let mut d = Document::new(RgbaImage::from_fn(40, 20, |x, _| {
+            if x < 20 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        }));
+        d.add(
+            Shape::Line {
+                a: Pt::new(10.0, 5.0),
+                b: Pt::new(30.0, 15.0),
+            },
+            DEFAULT_COLOR,
+            4.0,
+        );
+        d
+    }
+
+    #[test]
+    fn flipping_mirrors_the_picture_and_the_objects() {
+        let mut d = arrow_doc();
+        d.flip_horizontal();
+        assert_eq!(
+            d.base.get_pixel(0, 0).0,
+            [0, 0, 255, 255],
+            "blue half is now on the left"
+        );
+        let Shape::Line { a, b } = &d.objects[0].shape else {
+            panic!()
+        };
+        assert_eq!((a.x, a.y, b.x, b.y), (30.0, 5.0, 10.0, 15.0));
+        d.flip_vertical();
+        let Shape::Line { a, b } = &d.objects[0].shape else {
+            panic!()
+        };
+        assert_eq!((a.y, b.y), (15.0, 5.0));
+    }
+
+    #[test]
+    fn resizing_scales_the_picture_and_the_objects() {
+        let mut d = arrow_doc();
+        d.add(
+            Shape::Blur {
+                a: Pt::new(0.0, 0.0),
+                b: Pt::new(10.0, 10.0),
+                radius: 10,
+            },
+            DEFAULT_COLOR,
+            1.0,
+        );
+        assert!(d.resize_percent(50));
+        assert_eq!(d.size(), (20, 10));
+        let Shape::Line { b, .. } = &d.objects[0].shape else {
+            panic!()
+        };
+        assert_eq!((b.x, b.y), (15.0, 7.5));
+        assert_eq!(d.objects[0].width, 2.0);
+        let Shape::Blur { radius, .. } = &d.objects[1].shape else {
+            panic!()
+        };
+        assert_eq!(*radius, 5);
+        assert!(!d.resize_percent(100), "100 % changes nothing");
+    }
+
+    #[test]
+    fn beautify_adds_padding_rounds_corners_and_moves_the_objects() {
+        let mut d = arrow_doc();
+        let o = render::Beautify {
+            padding: 20,
+            radius: 8,
+            shadow: true,
+            ..render::Beautify::default()
+        };
+        d.beautify(&o);
+        assert_eq!(d.size(), (80, 60));
+        let Shape::Line { a, .. } = &d.objects[0].shape else {
+            panic!()
+        };
+        assert_eq!((a.x, a.y), (30.0, 25.0));
+        assert_eq!(
+            d.base.get_pixel(30, 30).0,
+            [255, 0, 0, 255],
+            "the picture sits in the middle, untouched"
+        );
+        let corner = d.base.get_pixel(20, 20).0;
+        assert_ne!(
+            corner,
+            [255, 0, 0, 255],
+            "the corner of the picture is rounded off: {corner:?}"
+        );
+        assert_eq!(d.base.get_pixel(0, 0)[3], 255, "the background is opaque");
+    }
+
+    #[test]
+    fn a_spotlight_dims_everything_but_its_rectangle() {
+        let mut d = doc(40, 40);
+        d.add(
+            Shape::Spotlight {
+                a: Pt::new(10.0, 10.0),
+                b: Pt::new(30.0, 30.0),
+            },
+            DEFAULT_COLOR,
+            1.0,
+        );
+        let out = d.render();
+        assert_eq!(out.get_pixel(20, 20).0, [255, 255, 255, 255], "inside stays bright");
+        assert!(
+            out.get_pixel(2, 2)[0] < 150,
+            "outside is darker: {:?}",
+            out.get_pixel(2, 2)
+        );
+        assert!(d.objects[0].shape.hit(Pt::new(20.0, 20.0), 1.0, 2.0));
     }
 
     #[test]
