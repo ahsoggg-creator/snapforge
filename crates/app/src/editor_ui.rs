@@ -27,15 +27,18 @@ pub enum Tool {
     Marker,
     Blur,
     Pixelate,
+    Spotlight,
     Step,
     Chart,
     Eraser,
+    /// Takes the colour of the pixel you click.
+    Picker,
     /// A tool registered by a plugin (see `EditorState::plugin_tool`); not part of `ALL`.
     Plugin,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 16] = [
         Tool::Select,
         Tool::Crop,
         Tool::Arrow,
@@ -47,10 +50,33 @@ impl Tool {
         Tool::Marker,
         Tool::Blur,
         Tool::Pixelate,
+        Tool::Spotlight,
         Tool::Step,
         Tool::Chart,
         Tool::Eraser,
+        Tool::Picker,
     ];
+
+    /// The single key that selects the tool while no text field has focus.
+    pub fn shortcut(self) -> Option<(Key, &'static str)> {
+        Some(match self {
+            Tool::Select => (Key::V, "V"),
+            Tool::Crop => (Key::C, "C"),
+            Tool::Arrow => (Key::A, "A"),
+            Tool::Line => (Key::L, "L"),
+            Tool::Rect => (Key::R, "R"),
+            Tool::Ellipse => (Key::E, "E"),
+            Tool::Text => (Key::T, "T"),
+            Tool::Pencil => (Key::P, "P"),
+            Tool::Marker => (Key::M, "M"),
+            Tool::Blur => (Key::B, "B"),
+            Tool::Pixelate => (Key::X, "X"),
+            Tool::Spotlight => (Key::H, "H"),
+            Tool::Step => (Key::N, "N"),
+            Tool::Picker => (Key::I, "I"),
+            Tool::Chart | Tool::Eraser | Tool::Plugin => return None,
+        })
+    }
 
     pub fn key(self) -> &'static str {
         match self {
@@ -65,6 +91,8 @@ impl Tool {
             Tool::Marker => "tool.marker",
             Tool::Blur => "tool.blur",
             Tool::Pixelate => "tool.pixelate",
+            Tool::Spotlight => "tool.spotlight",
+            Tool::Picker => "tool.picker",
             Tool::Step => "tool.step",
             Tool::Chart => "tool.chart",
             Tool::Eraser => "tool.eraser",
@@ -103,6 +131,10 @@ pub struct EditorState {
     text_checkpointed: bool,
     focus_text: bool,
     pub chart_dialog: Option<ChartDialog>,
+    /// The "frame" dialog (background, padding, rounded corners, shadow) while it is open.
+    frame: Option<snapforge_core::editor::Beautify>,
+    /// The "resize" dialog: the scale in percent while it is open.
+    resize_pct: Option<u32>,
     /// `(plugin id, tool id)` of the active plugin tool.
     pub plugin_tool: Option<(String, String)>,
     /// A click waiting to be handed to a plugin tool: `(plugin id, tool id, x, y)` in image pixels.
@@ -147,6 +179,8 @@ impl EditorState {
             text_checkpointed: false,
             focus_text: false,
             chart_dialog: None,
+            frame: None,
+            resize_pct: None,
             plugin_tool: None,
             tool_click: None,
         }
@@ -236,6 +270,67 @@ impl EditorState {
         }
     }
 
+    fn flip(&mut self, horizontal: bool) {
+        self.ed.checkpoint();
+        if horizontal {
+            self.ed.doc.flip_horizontal();
+        } else {
+            self.ed.doc.flip_vertical();
+        }
+        self.crop = None;
+        self.dirty = true;
+    }
+
+    fn resize(&mut self, percent: u32) {
+        self.ed.checkpoint();
+        if self.ed.doc.resize_percent(percent) {
+            self.crop = None;
+            self.zoom = 0.0;
+            self.pan = egui::Vec2::ZERO;
+            self.dirty = true;
+        } else {
+            self.ed.cancel_checkpoint();
+        }
+    }
+
+    fn apply_frame(&mut self, o: &snapforge_core::editor::Beautify) {
+        self.ed.checkpoint();
+        self.ed.doc.beautify(o);
+        self.crop = None;
+        self.zoom = 0.0;
+        self.pan = egui::Vec2::ZERO;
+        self.dirty = true;
+    }
+
+    /// Adds the redactions found by the automatic scan as ordinary editable layers (blur + pixelate for a face,
+    /// pixelate for a piece of sensitive text).
+    fn add_redactions(&mut self, faces: &[Rect], texts: &[Rect]) {
+        if faces.is_empty() && texts.is_empty() {
+            return;
+        }
+        self.ed.checkpoint();
+        let ink = [0, 0, 0, 255];
+        let corners = |r: &Rect| {
+            (
+                Pt::new(r.x as f32, r.y as f32),
+                Pt::new(r.right() as f32, r.bottom() as f32),
+            )
+        };
+        for r in faces {
+            let (a, b) = corners(r);
+            let radius = (r.w.min(r.h) / 4).max(6) as u32;
+            self.ed.doc.add(Shape::Blur { a, b, radius }, ink, 1.0);
+            let block = (r.w.min(r.h) / 5).max(6) as u32;
+            self.ed.doc.add(Shape::Pixelate { a, b, block }, ink, 1.0);
+        }
+        for r in texts {
+            let (a, b) = corners(r);
+            let block = (r.h / 2).max(5) as u32;
+            self.ed.doc.add(Shape::Pixelate { a, b, block }, ink, 1.0);
+        }
+        self.dirty = true;
+    }
+
     fn rotate(&mut self, cw: bool) {
         self.ed.checkpoint();
         if cw {
@@ -267,6 +362,7 @@ impl EditorState {
             Tool::Marker => Shape::Marker { pts: vec![p] },
             Tool::Blur => Shape::Blur { a: p, b: p, radius: 10 },
             Tool::Pixelate => Shape::Pixelate { a: p, b: p, block: 10 },
+            Tool::Spotlight => Shape::Spotlight { a: p, b: p },
             Tool::Chart => Shape::Chart {
                 a: p,
                 b: p,
@@ -285,6 +381,7 @@ impl EditorState {
                 | Shape::Ellipse { b, .. }
                 | Shape::Blur { b, .. }
                 | Shape::Chart { b, .. }
+                | Shape::Spotlight { b, .. }
                 | Shape::Pixelate { b, .. } => *b = p,
                 Shape::Pencil { pts } | Shape::Marker { pts }
                     if pts.last().is_none_or(|l| (l.x - p.x).hypot(l.y - p.y) > 0.8) =>
@@ -304,6 +401,7 @@ impl EditorState {
             Some(Shape::Rect { a, b, .. })
             | Some(Shape::Ellipse { a, b, .. })
             | Some(Shape::Blur { a, b, .. })
+            | Some(Shape::Spotlight { a, b })
             | Some(Shape::Pixelate { a, b, .. }) => (a.x - b.x).abs() < 3.0 || (a.y - b.y).abs() < 3.0,
             Some(Shape::Chart { a, b, .. }) => (a.x - b.x).abs() < 60.0 || (a.y - b.y).abs() < 60.0,
             _ => false,
@@ -393,7 +491,7 @@ impl EditorState {
                     self.crop = Some((p, p));
                     self.gesture = Gesture::Crop(p);
                 }
-                Tool::Text | Tool::Step | Tool::Eraser | Tool::Plugin => {}
+                Tool::Text | Tool::Step | Tool::Eraser | Tool::Plugin | Tool::Picker => {}
                 _ => {
                     if let Some(shape) = self.shape_for(tool, p) {
                         self.ed.checkpoint();
@@ -479,6 +577,21 @@ impl EditorState {
                 Tool::Plugin => {
                     if let Some((pid, id)) = self.plugin_tool.clone() {
                         self.tool_click = Some((pid, id, p.x as i64, p.y as i64));
+                    }
+                }
+                Tool::Picker => {
+                    let (x, y) = (p.x as i64, p.y as i64);
+                    if x >= 0 && y >= 0 && (x as u32) < iw && (y as u32) < ih {
+                        let px = self.ed.doc.base.get_pixel(x as u32, y as u32).0;
+                        self.color = [px[0], px[1], px[2], 255];
+                        // the picked colour goes to the selected object too, like any colour change
+                        if let Some(id) = self.selected {
+                            self.ed.checkpoint();
+                            if let Some(o) = self.ed.doc.get_mut(id) {
+                                o.color = self.color;
+                            }
+                            self.dirty = true;
+                        }
                     }
                 }
                 Tool::Step => {
@@ -691,6 +804,7 @@ impl EditorState {
                             "marker" => "tool.marker",
                             "blur" => "tool.blur",
                             "pixelate" => "tool.pixelate",
+                            "spotlight" => "tool.spotlight",
                             "chart" => "tool.chart",
                             _ => "tool.step",
                         })
@@ -749,6 +863,37 @@ impl App {
                 if ui.button(t("ed.rot_right")).clicked() {
                     es.rotate(true);
                 }
+                if ui.button(t("ed.flip_h")).clicked() {
+                    es.flip(true);
+                }
+                if ui.button(t("ed.flip_v")).clicked() {
+                    es.flip(false);
+                }
+                if ui.button(t("ed.resize")).clicked() {
+                    es.resize_pct = Some(100);
+                }
+                if ui.button(t("ed.frame")).clicked() {
+                    es.frame = Some(snapforge_core::editor::Beautify::default());
+                }
+                ui.separator();
+                let busy = self.protect_rx.is_some();
+                if ui
+                    .add_enabled(!busy, egui::Button::new(t("ed.auto_faces")))
+                    .on_hover_text(t("ed.auto_hint"))
+                    .clicked()
+                {
+                    action = Some(EditorAction::AutoHide(true));
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new(t("ed.auto_text")))
+                    .on_hover_text(t("ed.auto_hint"))
+                    .clicked()
+                {
+                    action = Some(EditorAction::AutoHide(false));
+                }
+                if busy {
+                    ui.add(egui::Spinner::new());
+                }
                 ui.separator();
                 if ui.button(t("ed.fit")).clicked() {
                     es.zoom = 0.0;
@@ -788,8 +933,12 @@ impl App {
         egui::Panel::left("editor_tools").exact_size(140.0).show(ui, |ui| {
             for tool in Tool::ALL {
                 let sel = es.tool == tool;
+                let label = match tool.shortcut() {
+                    Some((_, k)) => format!("{}  [{k}]", t(tool.key())),
+                    None => t(tool.key()).to_owned(),
+                };
                 if ui
-                    .add_sized([124.0, 26.0], egui::Button::selectable(sel, t(tool.key())))
+                    .add_sized([124.0, 26.0], egui::Button::selectable(sel, label))
                     .clicked()
                 {
                     es.tool = tool;
@@ -853,7 +1002,49 @@ impl App {
         }
 
         let ctx = ui.ctx().clone();
+        if !ctx.egui_wants_keyboard_input() {
+            let pressed = ctx.input(|i| {
+                if i.modifiers.any() {
+                    return None;
+                }
+                Tool::ALL
+                    .into_iter()
+                    .find(|t| t.shortcut().is_some_and(|(k, _)| i.key_pressed(k)))
+            });
+            if let Some(tool) = pressed {
+                es.tool = tool;
+                es.crop = None;
+                if tool != Tool::Select {
+                    es.selected = None;
+                }
+            }
+        }
         chart_dialog_ui(&ctx, &mut es, &t);
+        frame_dialog_ui(&ctx, &mut es, &t);
+        resize_dialog_ui(&ctx, &mut es, &t);
+        if let Some(rx) = &self.protect_rx
+            && let Ok(res) = rx.try_recv()
+        {
+            self.protect_rx = None;
+            let msg = match res {
+                Err(e) => (e, true),
+                Ok((faces_mode, found)) => {
+                    let n = found.len();
+                    if n == 0 {
+                        (
+                            t(if faces_mode { "ed.faces_none" } else { "ed.text_none" }).to_owned(),
+                            false,
+                        )
+                    } else {
+                        let (faces, texts): (&[Rect], &[Rect]) = if faces_mode { (&found, &[]) } else { (&[], &found) };
+                        es.add_redactions(faces, texts);
+                        let key = if faces_mode { "ed.faces_added" } else { "ed.text_added" };
+                        (t(key).replace("{n}", &n.to_string()), false)
+                    }
+                }
+            };
+            self.notify(msg.0, msg.1);
+        }
         self.editor = Some(es);
         self.ocr_window(&ctx);
         if let Some(a) = action {
@@ -911,7 +1102,42 @@ impl App {
             EditorAction::Copy => self.editor_copy(),
             EditorAction::DragOut => self.editor_drag_out(ctx),
             EditorAction::Ocr => self.editor_ocr(ctx),
+            EditorAction::AutoHide(faces) => self.editor_auto_hide(ctx, faces),
         }
+    }
+
+    /// "Hide faces" / "Hide text": scans the picture (not the drawings) in the background; the result is added as
+    /// editable layers by `editor_view`.
+    fn editor_auto_hide(&mut self, ctx: &egui::Context, faces: bool) {
+        use snapforge_core::post::{self, Preset, SystemAnalyzer};
+        let Some(es) = &self.editor else { return };
+        if faces && snapforge_core::face::model_state() != snapforge_core::face::ModelState::Ready {
+            let m = self.t("ed.need_model").to_owned();
+            self.notify(m, true);
+            return;
+        }
+        let (img, opts, ctx2) = (
+            (*es.ed.doc.base).clone(),
+            self.settings.post.options.clone(),
+            ctx.clone(),
+        );
+        let preset = Preset {
+            blur_faces: faces,
+            hide_sensitive: !faces,
+            ..Preset::default()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let f = post::analyze(&img, &preset, &opts, &SystemAnalyzer);
+            let res = match f.errors.first() {
+                Some((_, e)) => Err(e.clone()),
+                None if faces => Ok((true, f.faces)),
+                None => Ok((false, f.sensitive.iter().map(|m| m.rect).collect())),
+            };
+            let _ = tx.send(res);
+            ctx2.request_repaint();
+        });
+        self.protect_rx = Some(rx);
     }
 
     fn flattened(&self) -> Option<(RgbaImage, String)> {
@@ -1022,12 +1248,80 @@ pub enum EditorAction {
     Copy,
     DragOut,
     Ocr,
+    /// Scan for faces (`true`) or sensitive text (`false`) and hide what is found.
+    AutoHide(bool),
 }
 
 /// OCR window state: running in the background, or finished.
 pub enum OcrState {
     Running(std::sync::mpsc::Receiver<Result<String, String>>),
     Done(Result<String, String>),
+}
+
+fn frame_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'static str) -> &'static str) {
+    let Some(mut o) = es.frame.take() else { return };
+    let (mut apply, mut cancel) = (false, false);
+    egui::Window::new(t("ed.frame_title"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.add(egui::Slider::new(&mut o.padding, 0..=200).text(t("ed.frame_pad")));
+            ui.add(egui::Slider::new(&mut o.radius, 0..=60).text(t("ed.frame_radius")));
+            ui.checkbox(&mut o.shadow, t("ed.frame_shadow"));
+            ui.horizontal(|ui| {
+                ui.label(t("ed.frame_top"));
+                ui.color_edit_button_srgba_unmultiplied(&mut o.top);
+                ui.label(t("ed.frame_bottom"));
+                ui.color_edit_button_srgba_unmultiplied(&mut o.bottom);
+            });
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, t("ed.frame_apply")).clicked() {
+                    apply = true;
+                }
+                if ui.button(t("common.cancel")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if apply {
+        o.top[3] = 255;
+        o.bottom[3] = 255;
+        es.apply_frame(&o);
+    } else if !cancel {
+        es.frame = Some(o);
+    }
+}
+
+fn resize_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'static str) -> &'static str) {
+    let Some(mut pct) = es.resize_pct.take() else { return };
+    let (w, h) = es.ed.doc.size();
+    let (mut apply, mut cancel) = (false, false);
+    egui::Window::new(t("ed.resize_title"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.add(egui::Slider::new(&mut pct, 10..=300).text(t("ed.resize_pct")));
+            ui.label(format!(
+                "{w} × {h}  →  {} × {}",
+                (w * pct / 100).max(1),
+                (h * pct / 100).max(1)
+            ));
+            ui.horizontal(|ui| {
+                if theme::primary_button(ui, t("ed.frame_apply")).clicked() {
+                    apply = true;
+                }
+                if ui.button(t("common.cancel")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if apply {
+        es.resize(pct);
+    } else if !cancel {
+        es.resize_pct = Some(pct);
+    }
 }
 
 fn chart_dialog_ui(ctx: &egui::Context, es: &mut EditorState, t: &dyn Fn(&'static str) -> &'static str) {
@@ -1216,5 +1510,44 @@ impl App {
         if close {
             self.ocr_state = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> EditorState {
+        let img = RgbaImage::from_pixel(200, 100, snapforge_core::image::Rgba([200, 200, 200, 255]));
+        EditorState::new(&egui::Context::default(), img, String::new(), None)
+    }
+
+    #[test]
+    fn found_faces_and_text_become_editable_layers_with_one_undo_step() {
+        let mut es = state();
+        es.add_redactions(
+            &[Rect::new(10, 10, 40, 40)],
+            &[Rect::new(100, 50, 60, 12), Rect::new(100, 70, 60, 12)],
+        );
+        // a face is blurred and pixelated, a piece of text pixelated
+        assert_eq!(es.ed.doc.objects.len(), 4);
+        assert!(matches!(es.ed.doc.objects[0].shape, Shape::Blur { .. }));
+        assert!(matches!(es.ed.doc.objects[1].shape, Shape::Pixelate { .. }));
+        assert!(es.ed.undo(), "the whole scan result is one undo step");
+        assert!(es.ed.doc.objects.is_empty());
+        es.add_redactions(&[], &[]);
+        assert!(
+            !es.ed.can_undo() || es.ed.doc.objects.is_empty(),
+            "an empty result changes nothing"
+        );
+    }
+
+    #[test]
+    fn every_tool_shortcut_is_unique() {
+        let mut keys: Vec<_> = Tool::ALL.iter().filter_map(|t| t.shortcut().map(|(_, k)| k)).collect();
+        let n = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), n);
     }
 }

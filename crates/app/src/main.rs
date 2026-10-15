@@ -43,6 +43,9 @@ use snapforge_core::{diag as core_diag, paths};
 pub use capture_flow::{CapMsg, Shot};
 pub use editor_ui::EditorState;
 
+/// `(faces?, rectangles)` found by the editor's automatic hide scan, or the reason it failed.
+pub type ProtectResult = Result<(bool, Vec<snapforge_core::geometry::Rect>), String>;
+
 pub enum Mode {
     App,
     Install(installer::Install),
@@ -83,6 +86,8 @@ pub struct App {
     pub editor: Option<EditorState>,
     pub pending: Option<post_ui::Pending>,
     pub plugins: plugin_ui::PluginsState,
+    /// The result of a running "hide faces / hide text" scan in the editor: `(faces?, rectangles)`.
+    pub protect_rx: Option<Receiver<ProtectResult>>,
     pub tool_rx: Option<
         Receiver<(
             Option<snapforge_core::RgbaImage>,
@@ -170,6 +175,7 @@ impl App {
             editor: None,
             pending: None,
             plugins: plugin_ui::PluginsState::new(paths::plugins_dir()),
+            protect_rx: None,
             tool_rx: None,
             ocr_state: None,
             model_dl: None,

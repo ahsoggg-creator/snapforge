@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use image::RgbaImage;
 use tiny_skia::{
-    Color as SkColor, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
+    Color as SkColor, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
 };
 
 use super::model::{Color, Object, Pt, Shape, norm_rect, step_radius};
@@ -105,6 +105,93 @@ fn from_pixmap(pm: &Pixmap) -> RgbaImage {
     RgbaImage::from_raw(pm.width(), pm.height(), out).expect("same size")
 }
 
+/// "Frame" around a screenshot: gradient background, rounded corners, drop shadow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Beautify {
+    pub padding: u32,
+    pub radius: u32,
+    pub shadow: bool,
+    pub top: Color,
+    pub bottom: Color,
+}
+
+impl Default for Beautify {
+    fn default() -> Beautify {
+        Beautify {
+            padding: 48,
+            radius: 14,
+            shadow: true,
+            top: [96, 165, 250, 255],
+            bottom: [168, 85, 247, 255],
+        }
+    }
+}
+
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+    let r = r.clamp(0.0, w.min(h) / 2.0);
+    let k = 0.552_284_7 * r;
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
+/// The picture inside `o.padding` pixels of vertical gradient, with rounded corners and an optional shadow.
+pub fn beautify(base: &RgbaImage, o: &Beautify) -> RgbaImage {
+    let (w, h) = base.dimensions();
+    let pad = o.padding.min(400);
+    let (cw, ch) = (w + 2 * pad, h + 2 * pad);
+    let mut bg = RgbaImage::new(cw, ch);
+    for (y, row) in bg.rows_mut().enumerate() {
+        let t = y as f32 / (ch.max(2) - 1) as f32;
+        let lerp = |i: usize| (o.top[i] as f32 + (o.bottom[i] as f32 - o.top[i] as f32) * t).round() as u8;
+        let px = image::Rgba([lerp(0), lerp(1), lerp(2), 255]);
+        for p in row {
+            *p = px;
+        }
+    }
+    let mut pm = to_pixmap(&bg);
+    let id = Transform::identity();
+    let (x, y, fw, fh) = (pad as f32, pad as f32, w as f32, h as f32);
+    if o.shadow
+        && pad > 0
+        && let Some(mut sh) = Pixmap::new(cw, ch)
+        && let Some(path) = rounded_rect(x, y + (pad as f32 * 0.25).min(24.0), fw, fh, o.radius as f32)
+    {
+        sh.fill_path(&path, &paint([0, 0, 0, 150]), FillRule::Winding, id, None);
+        blur_region(
+            &mut sh,
+            Pt::new(0.0, 0.0),
+            Pt::new(cw as f32, ch as f32),
+            (pad / 3).max(4),
+        );
+        pm.draw_pixmap(0, 0, sh.as_ref(), &PixmapPaint::default(), id, None);
+    }
+    let src = to_pixmap(base);
+    let mask = Mask::new(cw, ch).and_then(|mut m| {
+        let path = rounded_rect(x, y, fw, fh, o.radius as f32)?;
+        m.fill_path(&path, FillRule::Winding, true, id);
+        Some(m)
+    });
+    pm.draw_pixmap(
+        pad as i32,
+        pad as i32,
+        src.as_ref(),
+        &PixmapPaint::default(),
+        id,
+        mask.as_ref(),
+    );
+    from_pixmap(&pm)
+}
+
 /// Renders `objects` (in order) over `base`.
 pub fn render(base: &RgbaImage, objects: &[Object]) -> RgbaImage {
     let mut pm = to_pixmap(base);
@@ -187,6 +274,19 @@ fn draw_object(pm: &mut Pixmap, o: &Object) {
         Shape::Pixelate { a, b, block } => {
             let (lo, hi) = norm_rect(*a, *b);
             pixelate_region(pm, lo, hi, *block);
+        }
+        Shape::Spotlight { a, b } => {
+            let (lo, hi) = norm_rect(*a, *b);
+            let mut pb = PathBuilder::new();
+            if let Some(all) = tiny_skia::Rect::from_ltrb(0.0, 0.0, pm.width() as f32, pm.height() as f32) {
+                pb.push_rect(all);
+            }
+            if let Some(hole) = tiny_skia::Rect::from_ltrb(lo.x, lo.y, hi.x.max(lo.x + 0.5), hi.y.max(lo.y + 0.5)) {
+                pb.push_rect(hole);
+            }
+            if let Some(p) = pb.finish() {
+                pm.fill_path(&p, &paint([0, 0, 0, 150]), FillRule::EvenOdd, id, None);
+            }
         }
         Shape::Chart { a, b, spec } => super::chart::draw(pm, *a, *b, spec, o.color),
         Shape::Step { at, n } => {

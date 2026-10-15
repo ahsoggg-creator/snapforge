@@ -266,6 +266,22 @@ impl App {
                 .checkbox(&mut self.settings.cursor_in_shot, tr(lang, "home.cursor"))
                 .changed();
         });
+        // what happens after a shot, right where the shots are taken: a preset, or the panel that asks every time
+        ui.horizontal(|ui| {
+            ui.label(tr(lang, "home.after"));
+            let names: Vec<String> = self.settings.post.presets.iter().map(|p| p.name.clone()).collect();
+            let active = self.settings.post.active.min(names.len().saturating_sub(1));
+            egui::ComboBox::from_id_salt("after_preset")
+                .selected_text(names.get(active).cloned().unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (i, n) in names.iter().enumerate() {
+                        changed |= ui.selectable_value(&mut self.settings.post.active, i, n).changed();
+                    }
+                });
+            changed |= ui
+                .checkbox(&mut self.settings.post.show_panel, tr(lang, "home.show_panel"))
+                .changed();
+        });
         if changed {
             self.save_settings();
         }

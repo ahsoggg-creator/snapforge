@@ -190,12 +190,45 @@ fn target_exe() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| e.to_string())
 }
 
+/// `SnapForge.exe.old`, then `.old1` … `.old9`: leftovers of previous updates.
+fn old_names(target: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    (0..10).map(move |i| {
+        target.with_extension(if i == 0 {
+            "exe.old".to_owned()
+        } else {
+            format!("exe.old{i}")
+        })
+    })
+}
+
 /// Deletes leftovers of a previous update.
 pub fn cleanup_old() {
     if let Ok(exe) = target_exe() {
-        let _ = std::fs::remove_file(exe.with_extension("exe.old"));
+        for p in old_names(&exe) {
+            let _ = std::fs::remove_file(p);
+        }
         let _ = std::fs::remove_file(exe.with_extension("exe.download"));
     }
+}
+
+/// Tries `op` a few times: an antivirus scanner or the search indexer may hold the file open for a moment, which
+/// shows up as "access denied" on a rename.
+fn retry<T>(what: &str, mut op: impl FnMut() -> std::io::Result<T>) -> Result<T, String> {
+    let mut last = None;
+    for attempt in 0..12 {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{what}: {e}")),
+            Err(e) => last = Some(e),
+        }
+        if attempt < 11 {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+    Err(format!(
+        "{what}: {} (a program such as an antivirus may be holding the file; try again in a minute)",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }
 
 fn dir_writable(dir: &Path) -> bool {
@@ -207,12 +240,14 @@ fn dir_writable(dir: &Path) -> bool {
 
 /// Replaces `target` with `new`: the running file is renamed to `*.old`, then `new` takes its name.
 pub fn swap_in(new: &Path, target: &Path) -> Result<(), String> {
-    let old = target.with_extension("exe.old");
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(target, &old).map_err(|e| format!("cannot move the current file: {e}"))?;
-    if let Err(e) = std::fs::rename(new, target) {
-        let _ = std::fs::rename(&old, target); // roll back
-        return Err(format!("cannot place the new file: {e}"));
+    // a leftover that cannot be deleted (still open somewhere) must not block the update: use the next free name
+    let old = old_names(target)
+        .find(|p| !p.exists() || std::fs::remove_file(p).is_ok())
+        .ok_or("cannot move the current file: too many leftovers of earlier updates next to it")?;
+    retry("cannot move the current file", || std::fs::rename(target, &old))?;
+    if let Err(e) = retry("cannot place the new file", || std::fs::rename(new, target)) {
+        let _ = retry("rollback", || std::fs::rename(&old, target));
+        return Err(e);
     }
     Ok(())
 }
@@ -658,6 +693,25 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         assert_eq!(std::fs::read(target.with_extension("exe.old")).unwrap(), b"old");
         assert!(!new.exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_leftover_that_cannot_be_deleted_does_not_block_the_swap() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = std::env::temp_dir().join(format!("sf-swap3-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (target, new) = (d.join("SnapForge.exe"), d.join("SnapForge.exe.download"));
+        let old = target.with_extension("exe.old");
+        std::fs::write(&target, b"current").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        std::fs::write(&old, b"stuck").unwrap();
+        // held open without delete sharing, like a scanner or a process still running from the file
+        let _held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&old).unwrap();
+        swap_in(&new, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(std::fs::read(target.with_extension("exe.old1")).unwrap(), b"current");
+        drop(_held);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

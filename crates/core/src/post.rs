@@ -108,7 +108,7 @@ impl Default for PostOptions {
             trim_tolerance: 8,
             hide_style: HideStyle::Pixelate,
             ocr_language: None,
-            face_threshold: 0.7,
+            face_threshold: 0.5,
         }
     }
 }
@@ -164,6 +164,10 @@ impl PostSettings {
         self.active = self.active.min(self.presets.len() - 1);
         self.options.downscale_percent = self.options.downscale_percent.clamp(1, 100);
         self.options.watermark_opacity = self.options.watermark_opacity.clamp(0.05, 1.0);
+        // 0.7 was the old default and missed faces that are small, turned or dim: a leak costs more than a false blur
+        if (self.options.face_threshold - 0.7).abs() < f32::EPSILON {
+            self.options.face_threshold = 0.5;
+        }
         self.options.face_threshold = self.options.face_threshold.clamp(0.3, 0.99);
     }
 
