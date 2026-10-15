@@ -20,7 +20,7 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.6.0)
+## Features (0.7.0)
 
 - **Editor: more tools (0.6.0).** "Hide faces" and "Hide text" find faces and sensitive text by themselves and cover them with blur as separate layers (move or delete them); "Spotlight" (dims everything around the selection), "Eyedropper", flip horizontally and vertically, resize, "Frame..." (gradient background, padding, rounded corners, shadow). Tools switch with a single key (shown in the list).
 - **After a shot (0.6.0).** The home page picks what happens after a shot and can switch the panel off: the chosen preset then runs silently and no window appears (it comes forward only when your decision is needed, for example to review found faces, or on an error).
