@@ -361,6 +361,33 @@ pub fn reveal(path: &Path) {
         .spawn();
 }
 
+/// Shows the main window and puts it in front of the other windows. Windows refuses a plain `SetForegroundWindow`
+/// from a background process, so the input queues are attached for the moment of the call.
+pub fn bring_to_front() {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, SW_RESTORE, SW_SHOW,
+        SetForegroundWindow, ShowWindow,
+    };
+    // SAFETY: plain window-management calls on a handle found just now; failures are ignored.
+    unsafe {
+        let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("SnapForge")) else {
+            return;
+        };
+        let _ = ShowWindow(hwnd, if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
+        let (me, fg) = (
+            GetCurrentThreadId(),
+            GetWindowThreadProcessId(GetForegroundWindow(), None),
+        );
+        let attached = fg != 0 && fg != me && AttachThreadInput(me, fg, true).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(me, fg, false);
+        }
+    }
+}
+
 pub fn open_url(url: &str) {
     let _ = std::process::Command::new("explorer").arg(url).spawn();
 }

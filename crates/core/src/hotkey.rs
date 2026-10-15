@@ -182,14 +182,17 @@ pub enum HotAction {
     CaptureScreen,
     /// The monitor under the cursor.
     CaptureMonitor,
+    /// Starts a screen recording (pick the area first); pressed again it stops.
+    RecordVideo,
 }
 
 impl HotAction {
-    pub const ALL: [HotAction; 4] = [
+    pub const ALL: [HotAction; 5] = [
         HotAction::CaptureRegion,
         HotAction::CaptureWindow,
         HotAction::CaptureScreen,
         HotAction::CaptureMonitor,
+        HotAction::RecordVideo,
     ];
 }
 
@@ -218,7 +221,17 @@ impl Profile {
                 b(HotAction::CaptureWindow, "Ctrl+Shift+W"),
                 b(HotAction::CaptureScreen, "Ctrl+Shift+F"),
                 b(HotAction::CaptureMonitor, "Ctrl+Shift+M"),
+                b(HotAction::RecordVideo, "Ctrl+Shift+R"),
             ],
+        }
+    }
+
+    /// Adds the actions a profile saved by an older version does not have yet (with their default combination).
+    pub fn add_missing_actions(&mut self) {
+        for d in Profile::default_profile().bindings {
+            if !self.bindings.iter().any(|b| b.action == d.action) {
+                self.bindings.push(d);
+            }
         }
     }
 

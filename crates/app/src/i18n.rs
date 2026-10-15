@@ -30,6 +30,11 @@ const TABLE: &[(&str, &str, &str)] = &[
         "Наведите на окно и щёлкните · Esc или правая кнопка — отмена",
         "Hover a window and click · Esc or right click cancels",
     ),
+    (
+        "sel.hint_screen",
+        "Нарисуйте или замажьте что нужно, затем щёлкните (или Enter) — снимок экрана · Esc или правая кнопка — отмена",
+        "Draw or blur what you need, then click (or Enter) to capture the screen · Esc or right click cancels",
+    ),
     // home
     ("home.title", "Снимок экрана без лишнего", "Screenshots, nothing extra"),
     (
@@ -271,13 +276,59 @@ const TABLE: &[(&str, &str, &str)] = &[
     ),
     ("upd.restart", "Перезапустить ({v})", "Restart ({v})"),
     ("upd.failed", "Не удалось обновиться", "Update failed"),
+    ("upd.retry", "Повторить загрузку ({v})", "Retry download ({v})"),
+    ("upd.install", "Установить", "Install"),
     ("upd.check_now", "Проверить сейчас", "Check now"),
     // tray
     ("tray.show", "Открыть SnapForge", "Open SnapForge"),
     ("tray.region", "Снимок области", "Capture region"),
     ("tray.window", "Снимок окна", "Capture window"),
     ("tray.screen", "Снимок всего экрана", "Capture full screen"),
+    ("tray.settings", "Настройки", "Settings"),
+    (
+        "tray.monitor",
+        "Снимок монитора под курсором",
+        "Capture monitor under cursor",
+    ),
+    ("tray.record", "Записать видео", "Record video"),
+    ("tray.record_stop", "Остановить запись", "Stop recording"),
+    ("tray.recording", "запись", "recording"),
     ("tray.quit", "Выход", "Quit"),
+    ("act.record", "Запись видео", "Record video"),
+    (
+        "sel.hint_record",
+        "Выберите область, окно или монитор для записи · Esc или правая кнопка — отмена",
+        "Pick the area, window or monitor to record · Esc or right click cancels",
+    ),
+    ("rec.banner", "Идёт запись: {t}", "Recording: {t}"),
+    ("rec.stop", "Остановить запись", "Stop recording"),
+    ("rec.saved", "Видео сохранено", "Video saved"),
+    ("rec.last", "Последнее видео:", "Last video:"),
+    ("rec.open", "Открыть", "Open"),
+    ("rec.folder", "В папке", "Show in folder"),
+    ("rec.failed", "Не удалось записать видео", "Recording failed"),
+    (
+        "rec.started",
+        "Запись идёт: остановить — {key} или значок в трее",
+        "Recording: stop with {key} or the tray icon",
+    ),
+    (
+        "rec.demo",
+        "В демо-режиме запись видео отключена",
+        "Video recording is disabled in demo mode",
+    ),
+    ("set.video", "Запись видео", "Video recording"),
+    ("set.video_fps", "Кадров в секунду:", "Frames per second:"),
+    (
+        "set.video_cursor",
+        "Показывать курсор в видео",
+        "Show the cursor in the video",
+    ),
+    (
+        "set.video_note",
+        "Видео H.264 (MP4) без звука, сохраняется в папку для снимков. Максимум 4096×2304: для больших экранов выберите монитор или область.",
+        "H.264 (MP4) video without sound, saved to the screenshots folder. At most 4096×2304: pick one monitor or a region on bigger screens.",
+    ),
     // installer
     ("inst.version", "версия", "version"),
     ("inst.installing", "Установка…", "Installing…"),
@@ -354,6 +405,11 @@ const TABLE: &[(&str, &str, &str)] = &[
         "set.overlay_privacy",
         "Сразу включать «скрыть чувствительное»",
         "Switch on \"hide sensitive text\" from the start",
+    ),
+    (
+        "set.overlay_screens",
+        "Панель инструментов и для снимка всего экрана / монитора",
+        "Show the toolbar for full-screen and monitor captures too",
     ),
     (
         "set.overlay_keys",

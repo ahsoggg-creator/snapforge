@@ -25,4 +25,5 @@ jobs:
       # input). They are verified locally; on a runner they are informational only.
       - name: Live desktop tests
         continue-on-error: true
+        timeout-minutes: 10
         run: cargo test --workspace -- --ignored --test-threads=1
