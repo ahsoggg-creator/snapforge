@@ -17,6 +17,8 @@ pub mod output;
 pub mod paths;
 pub mod plugin;
 pub mod post;
+#[cfg(windows)]
+pub mod record;
 pub mod secrets;
 pub mod sensitive;
 pub mod settings;

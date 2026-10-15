@@ -8,8 +8,9 @@ use snapforge_core::RgbaImage;
 use snapforge_core::capture::{self, CaptureOptions, sys};
 use snapforge_core::diag;
 use snapforge_core::editor::{Document, Object};
-use snapforge_core::geometry::virtual_bounds;
+use snapforge_core::geometry::{Rect, virtual_bounds};
 use snapforge_core::hotkey::{self, HotAction};
+use snapforge_core::record::Finished;
 use snapforge_core::settings::OverlayTool;
 
 use crate::selector::{self, Outcome};
@@ -44,6 +45,10 @@ pub enum CapMsg {
     Text(Result<String, String>),
     Cancelled,
     Failed(String),
+    /// The area picked for a screen recording (`None`: cancelled).
+    RecordArea(Option<Rect>),
+    /// A recording was stopped and written (or failed).
+    VideoSaved(Result<Finished, String>),
 }
 
 /// What the overlay remembers between captures.
@@ -68,6 +73,10 @@ pub struct OverlaySetup {
     pub width: f32,
     pub privacy: bool,
     pub ocr_language: Option<String>,
+    /// Full-screen and monitor captures go through the overlay too.
+    pub screens_overlay: bool,
+    pub screen_hint: String,
+    pub record_hint: String,
 }
 
 /// Our own process name must not become the `{app}` part of a file name.
@@ -116,70 +125,105 @@ fn grab(
         std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
     }
     let monitors = sys::monitors();
-    match action {
-        HotAction::CaptureScreen => {
-            let c = capture::capture_virtual_desktop(opts).map_err(|e| e.to_string())?;
-            Ok((Some(Shot::plain(c.image, fg)), None, None))
-        }
-        HotAction::CaptureMonitor => {
+    let screens = matches!(action, HotAction::CaptureScreen | HotAction::CaptureMonitor);
+    if screens && !setup.screens_overlay {
+        let c = if action == HotAction::CaptureScreen {
+            capture::capture_virtual_desktop(opts)
+        } else {
             let idx = monitor
                 .or_else(|| capture::monitor_under_cursor(&monitors).map(|m| m.index))
                 .ok_or("no monitor found")?;
-            let c = capture::capture_monitor(idx, opts).map_err(|e| e.to_string())?;
-            Ok((Some(Shot::plain(c.image, fg)), None, None))
+            capture::capture_monitor(idx, opts)
         }
-        HotAction::CaptureRegion | HotAction::CaptureWindow => {
-            let bounds = virtual_bounds(&monitors);
-            let frozen = capture::capture_rect_on(&monitors, bounds, opts).map_err(|e| e.to_string())?;
-            let windows = sys::visible_windows(0);
-            let req = selector::Request {
-                frozen: frozen.image.clone(),
-                origin: (bounds.x, bounds.y),
-                windows: windows.clone(),
-                monitors: monitors.iter().map(|m| m.rect).collect(),
-                start_tool: if action == HotAction::CaptureWindow {
-                    OverlayTool::Window
-                } else {
-                    setup.start_tool
-                },
-                keys: setup.keys.clone(),
-                labels: setup.labels.clone(),
-                undo_label: setup.undo_label.clone(),
-                cancel_label: setup.cancel_label.clone(),
-                privacy_label: setup.privacy_label.clone(),
-                hint: setup.hint.clone(),
-                color: setup.color,
-                width: setup.width,
-                privacy: setup.privacy,
-            };
-            let Some(Outcome {
-                rect,
-                objects,
-                color,
-                width,
-                tool,
-                privacy,
-            }) = selector::run(req)
-            else {
-                return Ok((None, None, None));
-            };
-            let memory = Some(OverlayMemory { color, width, privacy });
-            let base = capture::crop_piece(&frozen.image, bounds, rect);
-            let app = windows
-                .iter()
-                .find(|w| w.rect == rect)
-                .map(|w| w.app.clone())
-                .unwrap_or(fg);
-            let shot = finish_shot(base, objects, rect.x - bounds.x, rect.y - bounds.y, app, privacy);
-            if tool == OverlayTool::Ocr {
-                let text = snapforge_core::ocr::recognize(&shot.image, setup.ocr_language.as_deref())
-                    .map(|d| d.text)
-                    .map_err(|e| e.to_string());
-                return Ok((None, memory, Some(text)));
-            }
-            Ok((Some(shot), memory, None))
-        }
+        .map_err(|e| e.to_string())?;
+        return Ok((Some(Shot::plain(c.image, fg)), None, None));
     }
+    let bounds = virtual_bounds(&monitors);
+    let frozen = capture::capture_rect_on(&monitors, bounds, opts).map_err(|e| e.to_string())?;
+    let windows = sys::visible_windows(0);
+    let screen_target = match action {
+        HotAction::CaptureScreen => Some(bounds),
+        HotAction::CaptureMonitor => monitor.and_then(|i| monitors.iter().find(|m| m.index == i).map(|m| m.rect)),
+        _ => None,
+    };
+    let req = selector::Request {
+        frozen: frozen.image.clone(),
+        origin: (bounds.x, bounds.y),
+        windows: windows.clone(),
+        monitors: monitors.iter().map(|m| m.rect).collect(),
+        start_tool: match action {
+            HotAction::CaptureWindow => OverlayTool::Window,
+            HotAction::CaptureScreen | HotAction::CaptureMonitor => OverlayTool::Screen,
+            HotAction::CaptureRegion | HotAction::RecordVideo => setup.start_tool,
+        },
+        keys: setup.keys.clone(),
+        labels: setup.labels.clone(),
+        undo_label: setup.undo_label.clone(),
+        cancel_label: setup.cancel_label.clone(),
+        privacy_label: setup.privacy_label.clone(),
+        hint: if screens {
+            setup.screen_hint.clone()
+        } else {
+            setup.hint.clone()
+        },
+        color: setup.color,
+        width: setup.width,
+        privacy: setup.privacy,
+        screen_target,
+        capture_only: false,
+    };
+    let Some(Outcome {
+        rect,
+        objects,
+        color,
+        width,
+        tool,
+        privacy,
+    }) = selector::run(req)
+    else {
+        return Ok((None, None, None));
+    };
+    let memory = Some(OverlayMemory { color, width, privacy });
+    let base = capture::crop_piece(&frozen.image, bounds, rect);
+    let app = windows
+        .iter()
+        .find(|w| w.rect == rect)
+        .map(|w| w.app.clone())
+        .unwrap_or(fg);
+    let shot = finish_shot(base, objects, rect.x - bounds.x, rect.y - bounds.y, app, privacy);
+    if tool == OverlayTool::Ocr {
+        let text = snapforge_core::ocr::recognize(&shot.image, setup.ocr_language.as_deref())
+            .map(|d| d.text)
+            .map_err(|e| e.to_string());
+        return Ok((None, memory, Some(text)));
+    }
+    Ok((Some(shot), memory, None))
+}
+
+/// Shows the overlay with only the capture modes and returns the chosen area (screen recording).
+pub fn pick_area(setup: OverlaySetup) -> Result<Option<Rect>, String> {
+    let monitors = sys::monitors();
+    let bounds = virtual_bounds(&monitors);
+    let frozen = capture::capture_rect_on(&monitors, bounds, CaptureOptions::default()).map_err(|e| e.to_string())?;
+    let req = selector::Request {
+        frozen: frozen.image,
+        origin: (bounds.x, bounds.y),
+        windows: sys::visible_windows(0),
+        monitors: monitors.iter().map(|m| m.rect).collect(),
+        start_tool: OverlayTool::Region,
+        keys: setup.keys,
+        labels: setup.labels,
+        undo_label: setup.undo_label,
+        cancel_label: setup.cancel_label,
+        privacy_label: setup.privacy_label,
+        hint: setup.record_hint,
+        color: setup.color,
+        width: setup.width,
+        privacy: false,
+        screen_target: None,
+        capture_only: true,
+    };
+    Ok(selector::run(req).map(|o| o.rect))
 }
 
 impl App {
@@ -228,6 +272,9 @@ impl App {
             width: s.overlay_width,
             privacy: s.overlay_privacy,
             ocr_language: s.post.options.ocr_language.clone(),
+            screens_overlay: s.overlay_for_screens,
+            screen_hint: self.t("sel.hint_screen").to_owned(),
+            record_hint: self.t("sel.hint_record").to_owned(),
         }
     }
 
@@ -236,6 +283,10 @@ impl App {
     }
 
     pub fn start_capture_on(&mut self, ctx: &egui::Context, action: HotAction, monitor: Option<usize>) {
+        if action == HotAction::RecordVideo {
+            self.toggle_recording(ctx);
+            return;
+        }
         if self.capturing {
             return;
         }
@@ -322,8 +373,17 @@ impl App {
                 }
             }
             CapMsg::Cancelled => {
-                self.show_window(ctx);
+                if self.restore_window {
+                    self.show_window(ctx);
+                }
             }
+            CapMsg::RecordArea(Some(rect)) => self.start_recording(ctx, rect),
+            CapMsg::RecordArea(None) => {
+                if self.restore_window {
+                    self.show_window(ctx);
+                }
+            }
+            CapMsg::VideoSaved(res) => self.video_saved(ctx, res),
             CapMsg::Failed(e) => {
                 self.show_window(ctx);
                 let msg = format!("{}: {e}", self.t("err.capture"));

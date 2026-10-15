@@ -14,6 +14,7 @@ fn action_key(a: HotAction) -> &'static str {
         HotAction::CaptureWindow => "act.window",
         HotAction::CaptureScreen => "act.screen",
         HotAction::CaptureMonitor => "act.monitor",
+        HotAction::RecordVideo => "act.record",
     }
 }
 
@@ -93,21 +94,71 @@ impl App {
                 }
             }
             update::State::Downloading { done, total, .. } => {
-                ui.add(
-                    egui::ProgressBar::new(done as f32 / total.max(1) as f32)
-                        .desired_width(120.0)
-                        .text(tr(lang, "upd.downloading")),
-                );
+                let frac = done as f32 / total.max(1) as f32;
+                ui.add(egui::ProgressBar::new(frac).desired_width(150.0).text(format!(
+                    "{} {}%",
+                    tr(lang, "upd.downloading"),
+                    (frac * 100.0) as u32
+                )));
+            }
+            update::State::InstallFailed { version, error } => {
+                if theme::primary_button(ui, &self.tf("upd.retry", &[("v", version)])).clicked() {
+                    let ctx = ui.ctx().clone();
+                    update::install(self.update.clone(), move || ctx.request_repaint());
+                }
+                ui.label(RichText::new(tr(lang, "upd.failed")).color(theme::BAD))
+                    .on_hover_text(error);
             }
             update::State::Ready { version } => {
                 if theme::primary_button(ui, &self.tf("upd.restart", &[("v", version)])).clicked() {
                     if let Ok(exe) = std::env::current_exe() {
-                        let _ = std::process::Command::new(exe).spawn();
+                        let _ = std::process::Command::new(exe).arg("--restarted").spawn();
                     }
                     self.quit = true;
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The running recording (with a stop button) or the last finished video.
+    fn recording_banner(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let lang = self.settings.language;
+        if let Some(rec) = &self.recorder {
+            let s = rec.elapsed().as_secs();
+            let text = self.tf("rec.banner", &[("t", format!("{:02}:{:02}", s / 60, s % 60))]);
+            let mut stop = false;
+            theme::card(ui)
+                .stroke(egui::Stroke::new(1.5, theme::BAD))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("● {text}")).color(theme::BAD).strong());
+                        stop = theme::primary_button(ui, tr(lang, "rec.stop")).clicked();
+                    });
+                });
+            if stop {
+                self.stop_recording(ctx);
+            }
+            ui.add_space(8.0);
+        } else if let Some(path) = self.last_video.clone() {
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "rec.last"));
+                ui.label(
+                    RichText::new(
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                    .strong(),
+                );
+                if ui.small_button(tr(lang, "rec.open")).clicked() {
+                    self.open_last_video();
+                }
+                if ui.small_button(tr(lang, "rec.folder")).clicked() {
+                    winint::reveal(&path);
+                }
+            });
+            ui.add_space(8.0);
         }
     }
 
@@ -118,6 +169,7 @@ impl App {
         ui.label(RichText::new(tr(lang, "home.title")).size(22.0).strong());
         ui.label(RichText::new(tr(lang, "home.subtitle")).weak());
         ui.add_space(10.0);
+        self.recording_banner(ui, &ctx);
 
         let hint = |app: &App, a: HotAction| -> String {
             app.settings
@@ -153,6 +205,21 @@ impl App {
                     self.start_capture_on(&ctx, HotAction::CaptureMonitor, Some(self.monitor_choice));
                 }
             });
+            let h = hint(self, HotAction::RecordVideo);
+            let label = if h.is_empty() {
+                tr(lang, "act.record").to_owned()
+            } else {
+                format!(
+                    "{}
+{}",
+                    tr(lang, "act.record"),
+                    h
+                )
+            };
+            let b = egui::Button::new(RichText::new(label).size(15.0)).min_size(vec2(190.0, 62.0));
+            if ui.add_enabled(!self.capturing && self.recorder.is_none(), b).clicked() {
+                self.toggle_recording(&ctx);
+            }
         });
         ui.horizontal(|ui| {
             ui.label(tr(lang, "home.monitor"));
@@ -357,6 +424,8 @@ impl App {
             ui.add_space(8.0);
             self.overlay_card(ui, &mut changed);
             ui.add_space(8.0);
+            self.video_card(ui, &mut changed);
+            ui.add_space(8.0);
 
             theme::card(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -374,7 +443,8 @@ impl App {
                         changed = true;
                         self.localize_preset_names();
                         if !self.flags.demo {
-                            self.tray = crate::tray::Tray::new(&ctx, self.settings.language).or(self.tray.take());
+                            self.tray = crate::tray::Tray::new(&ctx, self.settings.language, self.recorder.is_some())
+                                .or(self.tray.take());
                         }
                     }
                 });
@@ -660,17 +730,36 @@ impl App {
                 update::State::Available { version, .. } => self.tf("upd.available", &[("v", version.clone())]),
                 update::State::Downloading { .. } => tr(lang, "upd.downloading").to_owned(),
                 update::State::Ready { version } => self.tf("upd.ready", &[("v", version.clone())]),
-                update::State::Failed(e) => format!("{}: {e}", tr(lang, "upd.failed")),
+                update::State::Failed(e) | update::State::InstallFailed { error: e, .. } => {
+                    format!("{}: {e}", tr(lang, "upd.failed"))
+                }
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                let busy = matches!(state, update::State::Checking | update::State::Downloading { .. });
                 if ui
-                    .add_enabled(!self.flags.demo, egui::Button::new(tr(lang, "upd.check_now")))
+                    .add_enabled(!self.flags.demo && !busy, egui::Button::new(tr(lang, "upd.check_now")))
                     .clicked()
                 {
                     let ctx = ui.ctx().clone();
                     update::check(self.update.clone(), false, move || ctx.request_repaint());
                 }
-                ui.label(text);
+                if matches!(
+                    state,
+                    update::State::Available { .. } | update::State::InstallFailed { .. }
+                ) && ui.button(tr(lang, "upd.install")).clicked()
+                {
+                    let ctx = ui.ctx().clone();
+                    update::install(self.update.clone(), move || ctx.request_repaint());
+                }
+                if let update::State::Downloading { done, total, .. } = state {
+                    ui.add(
+                        egui::ProgressBar::new(done as f32 / total.max(1) as f32)
+                            .desired_width(160.0)
+                            .show_percentage(),
+                    );
+                } else {
+                    ui.label(text);
+                }
             });
         });
     }

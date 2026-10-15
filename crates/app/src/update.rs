@@ -37,6 +37,11 @@ pub enum State {
         version: String,
     },
     Failed(String),
+    /// A newer version exists but its download or installation failed (it can be retried).
+    InstallFailed {
+        version: String,
+        error: String,
+    },
 }
 
 pub type Shared = Arc<Mutex<State>>;
@@ -49,7 +54,8 @@ pub struct Release {
     sum_url: String,
 }
 
-fn agent() -> ureq::Agent {
+/// A request is bounded so a stalled connection cannot hang the update: the download is resumed after a timeout.
+fn agent(timeout_secs: u64) -> ureq::Agent {
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::NativeTls)
         .build();
@@ -58,11 +64,35 @@ fn agent() -> ureq::Agent {
     #[cfg(test)]
     let builder = builder.proxy(None);
     builder
-        // the exe is tens of megabytes: a slow link must not abort the download (it is checked by SHA-256 anyway)
-        .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
+        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
         .build()
         .into()
+}
+
+/// Seconds one download request may take before it is cut and resumed from where it stopped.
+const CHUNK_TIMEOUT_SECS: u64 = 90;
+/// Consecutive failed requests (without a single new byte) before the download is given up.
+const MAX_STALLS: u32 = 6;
+
+fn get_text(url: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 0..4u64 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(attempt * 2));
+        }
+        match agent(30)
+            .get(url)
+            .header("User-Agent", &user_agent())
+            .call()
+            .map_err(|e| e.to_string())
+            .and_then(|mut r| r.body_mut().read_to_string().map_err(|e| e.to_string()))
+        {
+            Ok(t) => return Ok(t),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 fn user_agent() -> String {
@@ -113,15 +143,25 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
 }
 
 pub fn latest() -> Result<Release, String> {
-    let mut resp = agent()
-        .get(API)
-        .header("User-Agent", &user_agent())
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::StatusCode(404) => "no releases on GitHub yet".to_owned(),
-            e => format!("GitHub is unreachable: {e}"),
-        })?;
+    let call = || {
+        agent(30)
+            .get(API)
+            .header("User-Agent", &user_agent())
+            .header("Accept", "application/vnd.github+json")
+            .call()
+    };
+    let mut resp = call();
+    for attempt in 1..3u64 {
+        if resp.is_ok() || matches!(resp, Err(ureq::Error::StatusCode(404))) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(attempt * 2));
+        resp = call();
+    }
+    let mut resp = resp.map_err(|e| match e {
+        ureq::Error::StatusCode(404) => "no releases on GitHub yet".to_owned(),
+        e => format!("GitHub is unreachable: {e}"),
+    })?;
     let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let tag = v["tag_name"].as_str().ok_or("no tag_name in the GitHub response")?;
@@ -184,50 +224,110 @@ fn download(rel: &Release, state: &Shared, repaint: &dyn Fn()) -> Result<(), Str
 /// Downloads, verifies and swaps in the new exe in place of `exe`.
 fn download_to(rel: &Release, state: &Shared, repaint: &dyn Fn(), exe: &Path) -> Result<(), String> {
     let tmp = exe.with_extension("exe.download");
-    let sums_text = agent()
-        .get(&rel.sum_url)
-        .header("User-Agent", &user_agent())
-        .call()
-        .map_err(|e| e.to_string())?
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    let expected = parse_sums(&sums_text)
+    let expected = parse_sums(&get_text(&rel.sum_url)?)
         .remove(EXE_ASSET)
         .ok_or("SHA256SUMS.txt has no entry for SnapForge.exe")?;
+    set_downloading(state, rel, 0);
+    repaint();
+    let result = fetch_exe(rel, state, repaint, &tmp).and_then(|actual| {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err("the SHA-256 of the download does not match SHA256SUMS.txt; the file was discarded".to_owned())
+        }
+    });
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    swap_in(&tmp, exe)
+}
 
-    let mut resp = agent()
-        .get(&rel.exe_url)
-        .header("User-Agent", &user_agent())
-        .call()
-        .map_err(|e| e.to_string())?;
-    let mut reader = resp.body_mut().as_reader();
-    let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+fn set_downloading(state: &Shared, rel: &Release, done: u64) {
+    *state.lock().unwrap_or_else(|e| e.into_inner()) = State::Downloading {
+        version: rel.version.clone(),
+        done,
+        total: rel.exe_size.max(done),
+    };
+}
+
+/// Downloads the exe into `tmp`, resuming with `Range` after a dropped or stalled connection. Returns the SHA-256.
+fn fetch_exe(rel: &Release, state: &Shared, repaint: &dyn Fn(), tmp: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::create(tmp).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     let mut done = 0u64;
+    let mut stalls = 0u32;
+    let mut last_err = String::new();
     loop {
-        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
+        if rel.exe_size > 0 && done >= rel.exe_size {
             break;
         }
-        hasher.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        done += n as u64;
-        *state.lock().unwrap_or_else(|e| e.into_inner()) = State::Downloading {
-            version: rel.version.clone(),
-            done,
-            total: rel.exe_size.max(done),
+        if stalls >= MAX_STALLS {
+            return Err(format!("the download keeps failing: {last_err}"));
+        }
+        if stalls > 0 {
+            std::thread::sleep(std::time::Duration::from_secs((stalls as u64 * 2).min(10)));
+        }
+        let before = done;
+        let mut req = agent(CHUNK_TIMEOUT_SECS)
+            .get(&rel.exe_url)
+            .header("User-Agent", &user_agent());
+        if done > 0 {
+            req = req.header("Range", &format!("bytes={done}-"));
+        }
+        let mut resp = match req.call() {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(416)) if done > 0 => {
+                // the server cannot continue from there: start over
+                (file, hasher, done) = restart(tmp)?;
+                stalls += 1;
+                continue;
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                stalls += 1;
+                continue;
+            }
         };
-        repaint();
+        if done > 0 && resp.status().as_u16() != 206 {
+            // the server ignored the range and sends the whole file again
+            (file, hasher, done) = restart(tmp)?;
+        }
+        let mut reader = resp.body_mut().as_reader();
+        let finished = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                    file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    done += n as u64;
+                    set_downloading(state, rel, done);
+                    repaint();
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    break false;
+                }
+            }
+        };
+        if finished && (rel.exe_size == 0 || done >= rel.exe_size) {
+            break;
+        }
+        if finished {
+            last_err = "the connection closed before the whole file arrived".to_owned();
+        }
+        // only a request that brought no new data counts as a stall: a slow link keeps going
+        stalls = if done > before { 0 } else { stalls + 1 };
     }
+    file.flush().map_err(|e| e.to_string())?;
     drop(file);
-    let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    if actual != expected {
-        let _ = std::fs::remove_file(&tmp);
-        return Err("the SHA-256 of the download does not match SHA256SUMS.txt; the file was discarded".into());
-    }
-    swap_in(&tmp, exe)
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn restart(tmp: &Path) -> Result<(std::fs::File, Sha256, u64), String> {
+    let f = std::fs::File::create(tmp).map_err(|e| e.to_string())?;
+    Ok((f, Sha256::new(), 0))
 }
 
 /// Checks for a newer release. With `auto_install` it also downloads, verifies and swaps the exe.
@@ -253,9 +353,12 @@ pub fn check(state: Shared, auto_install: bool, repaint: impl Fn() + Send + 'sta
                     });
                     return;
                 }
-                match download(&rel, &state, &|| {}) {
+                match download(&rel, &state, &repaint) {
                     Ok(()) => set(State::Ready { version: rel.version }),
-                    Err(e) => set(State::Failed(e)),
+                    Err(error) => set(State::InstallFailed {
+                        version: rel.version,
+                        error,
+                    }),
                 }
             }
         }
@@ -269,9 +372,15 @@ pub fn install(state: Shared, repaint: impl Fn() + Send + 'static) {
             *state.lock().unwrap_or_else(|e| e.into_inner()) = s;
             repaint();
         };
-        match latest().and_then(|rel| download(&rel, &state, &repaint).map(|()| rel.version)) {
-            Ok(v) => set(State::Ready { version: v }),
+        match latest() {
             Err(e) => set(State::Failed(e)),
+            Ok(rel) => match download(&rel, &state, &repaint) {
+                Ok(()) => set(State::Ready { version: rel.version }),
+                Err(error) => set(State::InstallFailed {
+                    version: rel.version,
+                    error,
+                }),
+            },
         }
     });
 }
@@ -416,6 +525,82 @@ mod tests {
         assert_eq!(std::fs::read(&exe).unwrap(), new);
         assert_eq!(std::fs::read(exe.with_extension("exe.old")).unwrap(), b"old version");
         assert!(!exe.with_extension("exe.download").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Serves `body` at `/SnapForge.exe`; the first `cuts` responses are cut off half way, later ones honour `Range`.
+    fn serve_flaky(sums: String, body: Vec<u8>, cuts: usize) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let h = std::thread::spawn(move || {
+            let mut cut = 0;
+            // the sums file, then the exe until it is whole
+            for _ in 0..(2 + cuts) {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut from = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap() == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(r) = h.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        from = r.trim().trim_end_matches('-').parse().unwrap_or(0);
+                    }
+                }
+                if line.contains("SHA256SUMS") {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        sums.len()
+                    );
+                    sock.write_all(head.as_bytes()).unwrap();
+                    sock.write_all(sums.as_bytes()).unwrap();
+                    continue;
+                }
+                let part = &body[from..];
+                let head = if from > 0 {
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len() - 1,
+                        body.len(),
+                        part.len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        part.len()
+                    )
+                };
+                sock.write_all(head.as_bytes()).unwrap();
+                if cut < cuts {
+                    cut += 1;
+                    sock.write_all(&part[..part.len() / 2]).unwrap();
+                } else {
+                    sock.write_all(part).unwrap();
+                }
+            }
+        });
+        (base, h)
+    }
+
+    #[test]
+    fn a_dropped_connection_is_resumed_with_a_range_request() {
+        let dir = std::env::temp_dir().join(format!("sf-upd-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("SnapForge.exe");
+        std::fs::write(&exe, b"old version").unwrap();
+        let new: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let sum: String = Sha256::digest(&new).iter().map(|b| format!("{b:02x}")).collect();
+        let (base, srv) = serve_flaky(format!("{sum}  SnapForge.exe\n"), new.clone(), 2);
+        let state: Shared = Arc::new(Mutex::new(State::Idle));
+        let mut rel = release(&base);
+        rel.exe_size = new.len() as u64;
+        download_to(&rel, &state, &|| {}, &exe).expect("resumed update");
+        srv.join().unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), new, "the pieces add up to the exact file");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

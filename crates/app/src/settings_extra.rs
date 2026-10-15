@@ -548,6 +548,27 @@ fn otool_key(t: snapforge_core::settings::OverlayTool) -> &'static str {
 const RESERVED_KEYS: [u32; 7] = [0x1B, 0x0D, 0x08, 0x25, 0x26, 0x27, 0x28];
 
 impl App {
+    /// "Video recording": frame rate and cursor.
+    pub fn video_card(&mut self, ui: &mut Ui, changed: &mut bool) {
+        let lang = self.settings.language;
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(tr(lang, "set.video")).strong());
+            ui.label(RichText::new(tr(lang, "set.video_note")).weak().small());
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "set.video_fps"));
+                for fps in [15u32, 24, 30, 60] {
+                    *changed |= ui
+                        .selectable_value(&mut self.settings.video_fps, fps, fps.to_string())
+                        .changed();
+                }
+            });
+            *changed |= ui
+                .checkbox(&mut self.settings.video_cursor, tr(lang, "set.video_cursor"))
+                .changed();
+        });
+    }
+
     /// "Capture overlay": the tool the overlay starts with, privacy and one configurable key per tool.
     pub fn overlay_card(&mut self, ui: &mut Ui, changed: &mut bool) {
         use snapforge_core::hotkey::{key_label, parse_single_key, poll_pressed_combo};
@@ -584,6 +605,9 @@ impl App {
             });
             *changed |= ui
                 .checkbox(&mut self.settings.overlay_privacy, tr(lang, "set.overlay_privacy"))
+                .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_for_screens, tr(lang, "set.overlay_screens"))
                 .changed();
             ui.separator();
             ui.label(tr(lang, "set.overlay_keys"));

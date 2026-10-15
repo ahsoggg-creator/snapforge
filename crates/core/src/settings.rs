@@ -140,6 +140,11 @@ pub struct Settings {
     pub overlay_width: f32,
     /// Start every capture with "hide sensitive text" switched on in the overlay.
     pub overlay_privacy: bool,
+    /// Full-screen and monitor captures also open the overlay with its toolbar (draw, blur, hide faces first).
+    pub overlay_for_screens: bool,
+    /// Screen recording: frames per second (15, 24, 30 or 60) and whether the mouse cursor is drawn into the video.
+    pub video_fps: u32,
+    pub video_cursor: bool,
 }
 
 impl Default for Settings {
@@ -168,6 +173,9 @@ impl Default for Settings {
             overlay_color: [230, 40, 40, 255],
             overlay_width: 4.0,
             overlay_privacy: false,
+            overlay_for_screens: true,
+            video_fps: 30,
+            video_cursor: true,
         }
     }
 }
@@ -199,7 +207,11 @@ impl Settings {
         if self.profiles.is_empty() {
             self.profiles.push(Profile::default_profile());
         }
+        for p in &mut self.profiles {
+            p.add_missing_actions();
+        }
         self.active_profile = self.active_profile.min(self.profiles.len() - 1);
+        self.video_fps = self.video_fps.clamp(5, 60);
         self.jpeg_quality = self.jpeg_quality.clamp(1, 100);
         self.delay_ms = self.delay_ms.min(60_000);
         self.post.sanitize();
@@ -250,6 +262,21 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_profile_from_an_older_version_gets_the_new_actions() {
+        let mut s = Settings::default();
+        s.profiles[0]
+            .bindings
+            .retain(|b| b.action != crate::hotkey::HotAction::RecordVideo);
+        s.video_fps = 500;
+        s.sanitize();
+        let actions: Vec<_> = s.profiles[0].bindings.iter().map(|b| b.action).collect();
+        for a in crate::hotkey::HotAction::ALL {
+            assert_eq!(actions.iter().filter(|x| **x == a).count(), 1, "{a:?}");
+        }
+        assert_eq!(s.video_fps, 60);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sf-settings-{}-{name}", std::process::id()));

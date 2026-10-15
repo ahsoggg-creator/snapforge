@@ -16,6 +16,7 @@ mod i18n;
 mod installer;
 mod plugin_ui;
 mod post_ui;
+mod record_flow;
 mod selector;
 mod settings_extra;
 mod theme;
@@ -62,6 +63,8 @@ pub struct Flags {
     pub demo: bool,
     pub screenshots: Option<PathBuf>,
     pub minimized: bool,
+    /// Started by "Restart" after an update: wait for the previous copy to exit.
+    pub restarted: bool,
 }
 
 pub struct Toast {
@@ -107,6 +110,9 @@ pub struct App {
     pub hotkey_rx: Receiver<HotAction>,
     pub hotkey_report: Vec<Registered>,
     pub tray: Option<tray::Tray>,
+    pub recorder: Option<snapforge_core::record::Recorder>,
+    pub rec_secs: u64,
+    pub last_video: Option<PathBuf>,
     pub update: update::Shared,
     pub monitors: Vec<Monitor>,
     pub monitor_choice: usize,
@@ -188,6 +194,9 @@ impl App {
             hotkey_rx,
             hotkey_report: Vec::new(),
             tray: None,
+            recorder: None,
+            rec_secs: 0,
+            last_video: None,
             update: Arc::new(Mutex::new(update::State::Idle)),
             monitors: sys::monitors(),
             monitor_choice: 0,
@@ -208,7 +217,7 @@ impl App {
         app.localize_preset_names();
         if is_app && !demo {
             app.apply_hotkeys();
-            app.tray = tray::Tray::new(&cc.egui_ctx, app.settings.language);
+            app.tray = tray::Tray::new(&cc.egui_ctx, app.settings.language, false);
             app.purge_history();
             app.maybe_check_update(&cc.egui_ctx);
             // a window that is hidden before its first frame never gets any: hide it a few frames in
@@ -361,13 +370,19 @@ impl App {
         }
         self.post_poll(ctx);
         self.plugins_poll(ctx);
+        self.recording_tick(ctx);
         while let Ok((text, error)) = self.toast_rx.try_recv() {
             self.notify(text, error);
         }
         for ev in tray::poll() {
             match ev {
                 tray::TrayEvent::Show => self.show_window(ctx),
+                tray::TrayEvent::Settings => {
+                    self.view = View::Settings;
+                    self.show_window(ctx);
+                }
                 tray::TrayEvent::Capture(a) => self.start_capture(ctx, a),
+                tray::TrayEvent::Record => self.toggle_recording(ctx),
                 tray::TrayEvent::Quit => self.quit = true,
             }
         }
@@ -397,6 +412,7 @@ impl App {
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
+        winint::bring_to_front();
         self.window_hidden = false;
     }
 }
@@ -438,21 +454,35 @@ fn parse_flags() -> (Flags, bool, bool, bool) {
         demo: has("--demo") || screenshots.is_some(),
         screenshots,
         minimized: has("--minimized"),
+        restarted: has("--restarted"),
     };
     (flags, has("--update"), has("--uninstall"), has("--install"))
 }
 
-/// Returns false if another copy of the app is already running.
-fn single_instance() -> bool {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+/// Returns false if another copy of the app is already running. After a restart (`--restarted`) the previous copy is
+/// still shutting down, so the new one waits for it for a few seconds instead of quitting at once.
+fn single_instance(wait_for_previous: bool) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::core::w;
-    // SAFETY: the handle is intentionally kept for the lifetime of the process.
-    unsafe {
-        match CreateMutexW(None, false, w!("Local\\SnapForge.SingleInstance")) {
-            Ok(_) => GetLastError() != ERROR_ALREADY_EXISTS,
-            Err(_) => true,
+    let deadline = Instant::now() + Duration::from_secs(if wait_for_previous { 15 } else { 0 });
+    loop {
+        // SAFETY: the handle is intentionally kept for the lifetime of the process when this copy owns the mutex.
+        unsafe {
+            match CreateMutexW(None, false, w!("Local\\SnapForge.SingleInstance")) {
+                Ok(h) => {
+                    if GetLastError() != ERROR_ALREADY_EXISTS {
+                        return true;
+                    }
+                    let _ = CloseHandle(h);
+                }
+                Err(_) => return true,
+            }
         }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(150));
     }
 }
 
@@ -481,7 +511,7 @@ fn main() -> eframe::Result {
     } else {
         Mode::App
     };
-    if matches!(mode, Mode::App) && !flags.demo && !single_instance() {
+    if matches!(mode, Mode::App) && !flags.demo && !single_instance(flags.restarted) {
         return Ok(());
     }
     let (size, min) = match mode {

@@ -47,6 +47,11 @@ pub struct Request {
     pub width: f32,
     pub privacy: bool,
     pub privacy_label: String,
+    /// What the "screen" tool captures instead of the monitor under the cursor (virtual-desktop pixels): the whole
+    /// desktop or one chosen monitor.
+    pub screen_target: Option<Rect>,
+    /// Only pick an area (screen recording): the toolbar offers just the capture modes.
+    pub capture_only: bool,
 }
 
 /// What the user chose.
@@ -94,34 +99,36 @@ pub struct Button {
 }
 
 /// Lays the toolbar out centred at the top of `monitor` (client coordinates). Returns the bar rectangle and buttons.
+#[cfg(test)]
 pub fn toolbar_layout(monitor: Rect) -> (Rect, Vec<Button>) {
-    let mut items: Vec<(Btn, i32)> = Vec::new(); // (button, width); a width of 0 is a separator
-    for t in Tool::ALL {
-        if t == Tool::Pencil || t == Tool::Rect || t == Tool::Window {
-            // groups: capture | shapes | freehand & text | effects
-        }
-        items.push((Btn::Tool(t), BTN));
-    }
-    let tool_count = items.len();
-    let mut widths: Vec<(Option<Btn>, i32)> = Vec::new();
-    for (i, (b, w)) in items.into_iter().enumerate() {
+    toolbar_layout_for(monitor, false)
+}
+
+/// `capture_only` leaves just the area/window/monitor modes and the cancel button (used when recording a video).
+pub fn toolbar_layout_for(monitor: Rect, capture_only: bool) -> (Rect, Vec<Button>) {
+    let mut widths: Vec<(Option<Btn>, i32)> = Vec::new(); // (button, width); no button = a gap
+    let tools = Tool::ALL
+        .into_iter()
+        .filter(|t| !capture_only || matches!(t, Tool::Region | Tool::Window | Tool::Screen));
+    for (i, t) in tools.enumerate() {
         if i == 4 {
             widths.push((None, 10)); // after the capture tools
         }
-        widths.push((Some(b), w));
-    }
-    let _ = tool_count;
-    widths.push((None, 10));
-    for i in 0..PALETTE.len() {
-        widths.push((Some(Btn::Color(i)), 24));
+        widths.push((Some(Btn::Tool(t)), BTN));
     }
     widths.push((None, 10));
-    widths.push((Some(Btn::WidthDown), 26));
-    widths.push((None, 30)); // the number
-    widths.push((Some(Btn::WidthUp), 26));
-    widths.push((None, 10));
-    widths.push((Some(Btn::Privacy), BTN));
-    widths.push((Some(Btn::Undo), BTN));
+    if !capture_only {
+        for i in 0..PALETTE.len() {
+            widths.push((Some(Btn::Color(i)), 24));
+        }
+        widths.push((None, 10));
+        widths.push((Some(Btn::WidthDown), 26));
+        widths.push((None, 30)); // the number
+        widths.push((Some(Btn::WidthUp), 26));
+        widths.push((None, 10));
+        widths.push((Some(Btn::Privacy), BTN));
+        widths.push((Some(Btn::Undo), BTN));
+    }
     widths.push((Some(Btn::Cancel), BTN));
     let pad = 8;
     let total: i32 = widths.iter().map(|(_, w)| *w).sum::<i32>()
@@ -179,7 +186,11 @@ struct State {
     cancel_label: String,
     hint: Vec<u16>,
     bar: Rect,
+    /// The monitor (client coordinates) the toolbar currently sits on.
+    bar_monitor: Rect,
     buttons: Vec<Button>,
+    screen_target: Option<Rect>,
+    capture_only: bool,
     ed: Editor,
     color: [u8; 4],
     width: f32,
@@ -347,7 +358,7 @@ impl State {
                 .find(|m| cursor.is_some_and(|(x, y)| m.contains(x, y)))
                 .or_else(|| req.monitors.first().map(|m| m.translate(-req.origin.0, -req.origin.1)))
                 .unwrap_or(Rect::new(0, 0, w, h));
-            let (bar, buttons) = toolbar_layout(monitor);
+            let (bar, buttons) = toolbar_layout_for(monitor, req.capture_only);
             let mut st = State {
                 w,
                 h,
@@ -365,7 +376,10 @@ impl State {
                 cancel_label: req.cancel_label.clone(),
                 hint: utf16(&req.hint),
                 bar,
+                bar_monitor: monitor,
                 buttons,
+                screen_target: req.screen_target.map(|r| r.translate(-req.origin.0, -req.origin.1)),
+                capture_only: req.capture_only,
                 ed: Editor::new(req.frozen.clone()),
                 color: req.color,
                 width: req.width.clamp(1.0, 24.0),
@@ -463,10 +477,34 @@ impl State {
     }
 
     fn hovered_monitor(&self) -> Option<Rect> {
+        if self.screen_target.is_some() {
+            return self.screen_target;
+        }
         self.monitors
             .iter()
             .copied()
             .find(|m| m.contains(self.cur.0, self.cur.1))
+    }
+
+    /// Moves the toolbar to the monitor under the cursor (only while nothing is being drawn or typed).
+    fn follow_cursor(&mut self) {
+        if self.draw.is_some() || self.region_drag.is_some() || self.text.is_some() || self.anchor.is_some() {
+            return;
+        }
+        let Some(m) = self
+            .monitors
+            .iter()
+            .copied()
+            .find(|m| m.contains(self.cur.0, self.cur.1))
+        else {
+            return;
+        };
+        if m != self.bar_monitor {
+            let (bar, buttons) = toolbar_layout_for(m, self.capture_only);
+            self.bar_monitor = m;
+            self.bar = bar;
+            self.buttons = buttons;
+        }
     }
 
     fn over_bar(&self, p: (i32, i32)) -> bool {
@@ -1081,6 +1119,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 {
                     d.pts.push(Pt::new(st.cur.0 as f32, st.cur.1 as f32));
                 }
+                st.follow_cursor();
                 redraw(hwnd);
                 LRESULT(0)
             }
@@ -1239,7 +1278,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     st.width = (st.width + 1.0).min(24.0);
                 } else if !ctrl
                     && key != VK_BACK.0
-                    && let Some((t, _)) = st.keys.iter().find(|(_, vk)| *vk == key as u32)
+                    && let Some((t, _)) = st.keys.iter().find(|(t, vk)| {
+                        *vk == key as u32
+                            && (!st.capture_only || matches!(t, Tool::Region | Tool::Window | Tool::Screen))
+                    })
                 {
                     st.tool = *t;
                     st.anchor = None;
@@ -1331,6 +1373,8 @@ mod tests {
             width: 4.0,
             privacy: false,
             privacy_label: "Hide sensitive text".into(),
+            screen_target: None,
+            capture_only: false,
         }
     }
 
