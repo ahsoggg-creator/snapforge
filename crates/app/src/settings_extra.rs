@@ -101,6 +101,7 @@ impl App {
                     .checkbox(&mut p.hide_sensitive, tr(lang, "post.hide_sensitive"))
                     .changed();
                 *changed |= ui.checkbox(&mut p.blur_faces, tr(lang, "post.blur_faces")).changed();
+                *changed |= ui.checkbox(&mut p.beautify, tr(lang, "post.beautify")).changed();
                 *changed |= ui.checkbox(&mut p.watermark, tr(lang, "post.watermark")).changed();
                 *changed |= ui.checkbox(&mut p.downscale, tr(lang, "post.downscale")).changed();
             });
@@ -118,6 +119,11 @@ impl App {
             }
             ui.separator();
 
+            egui::CollapsingHeader::new(tr(lang, "set.beautify")).show(ui, |ui| {
+                ui.label(RichText::new(tr(lang, "set.beautify_hint")).weak().small());
+                let t = |k: &'static str| tr(lang, k);
+                *changed |= crate::editor_ui::beautify_controls(ui, &mut self.settings.post.options.beautify, &t);
+            });
             let o = &mut self.settings.post.options;
             ui.horizontal(|ui| {
                 ui.label(tr(lang, "set.wm_text"));
@@ -582,7 +588,7 @@ impl App {
     /// "Capture overlay": the tool the overlay starts with, privacy and one configurable key per tool.
     pub fn overlay_card(&mut self, ui: &mut Ui, changed: &mut bool) {
         use snapforge_core::hotkey::{key_label, parse_single_key, poll_pressed_combo};
-        use snapforge_core::settings::{OverlayClick, OverlayTool, ToolbarPos, default_overlay_keys};
+        use snapforge_core::settings::{CaptureSound, OverlayClick, OverlayTool, ToolbarPos, default_overlay_keys};
         let lang = self.settings.language;
         if self.overlay_key_text.len() != OverlayTool::ALL.len() {
             self.overlay_key_text = OverlayTool::ALL
@@ -625,6 +631,58 @@ impl App {
             *changed |= ui
                 .checkbox(&mut self.settings.overlay_magnifier, tr(lang, "set.ov_magnifier"))
                 .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_crosshair, tr(lang, "set.ov_crosshair"))
+                .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_thirds, tr(lang, "set.ov_thirds"))
+                .changed();
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "set.ov_accent"));
+                *changed |= ui
+                    .color_edit_button_srgba_unmultiplied(&mut self.settings.overlay_accent)
+                    .changed();
+                if self.settings.overlay_accent != snapforge_core::settings::DEFAULT_OVERLAY_ACCENT
+                    && ui.small_button(tr(lang, "set.ov_accent_reset")).clicked()
+                {
+                    self.settings.overlay_accent = snapforge_core::settings::DEFAULT_OVERLAY_ACCENT;
+                    *changed = true;
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label(tr(lang, "set.sound"));
+                for (v, key) in [
+                    (CaptureSound::Off, "set.sound_off"),
+                    (CaptureSound::Click, "set.sound_click"),
+                    (CaptureSound::Custom, "set.sound_custom"),
+                ] {
+                    *changed |= ui
+                        .selectable_value(&mut self.settings.capture_sound, v, tr(lang, key))
+                        .changed();
+                }
+                if self.settings.capture_sound == CaptureSound::Custom {
+                    ui.label(
+                        self.settings
+                            .capture_sound_file
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    );
+                    if ui.button(tr(lang, "set.choose")).clicked()
+                        && let Some(f) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file()
+                    {
+                        self.settings.capture_sound_file = Some(f);
+                        *changed = true;
+                    }
+                }
+                if self.settings.capture_sound != CaptureSound::Off && ui.button("▶").clicked() {
+                    crate::winint::play_capture_sound(
+                        self.settings.capture_sound,
+                        self.settings.capture_sound_file.as_deref(),
+                    );
+                }
+            });
             ui.horizontal(|ui| {
                 ui.label(tr(lang, "set.ov_click"));
                 let click_key = |c: OverlayClick| match c {

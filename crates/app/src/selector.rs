@@ -68,6 +68,9 @@ pub struct OverlayOpts {
     /// Darkening of the part of the screen that is not selected, in percent.
     pub dim: u8,
     pub magnifier: bool,
+    pub crosshair: bool,
+    pub thirds: bool,
+    pub accent: [u8; 4],
     pub redo_label: String,
     pub fill_label: String,
     pub select_hint: String,
@@ -85,6 +88,9 @@ impl Default for OverlayOpts {
             bottom: false,
             dim: 60,
             magnifier: true,
+            crosshair: false,
+            thirds: false,
+            accent: snapforge_core::settings::DEFAULT_OVERLAY_ACCENT,
             redo_label: "Redo".into(),
             fill_label: "Fill".into(),
             select_hint: String::new(),
@@ -111,7 +117,6 @@ pub struct Outcome {
 
 const MAG_SRC: i32 = 17; // source pixels per side (odd: one centre pixel)
 const MAG_ZOOM: i32 = 9;
-const ACCENT: COLORREF = COLORREF(0x00FA_A560); // BGR of (96,165,250)
 const BTN: i32 = 34;
 const GAP: i32 = 10;
 const ROW_GAP: i32 = 4;
@@ -370,6 +375,9 @@ struct State {
     bottom: bool,
     dim: u8,
     magnifier: bool,
+    crosshair: bool,
+    thirds: bool,
+    accent: COLORREF,
     redo_label: String,
     fill_label: String,
     select_hint: String,
@@ -583,6 +591,9 @@ impl State {
                 bottom: o.bottom,
                 dim: o.dim.min(90),
                 magnifier: o.magnifier,
+                crosshair: o.crosshair,
+                thirds: o.thirds,
+                accent: rgba(o.accent),
                 redo_label: o.redo_label.clone(),
                 fill_label: o.fill_label.clone(),
                 select_hint: o.select_hint.clone(),
@@ -1123,7 +1134,7 @@ impl State {
             let sel = self.selection();
             if let Some(r) = sel {
                 let _ = BitBlt(back, r.x, r.y, r.w, r.h, Some(self.bright_dc), r.x, r.y, SRCCOPY);
-                let pen = CreatePen(PS_SOLID, 2, ACCENT);
+                let pen = CreatePen(PS_SOLID, 2, self.accent);
                 let old_pen = SelectObject(back, pen.into());
                 let old_brush = SelectObject(back, GetStockObject(NULL_BRUSH));
                 let _ = Rectangle(back, r.x - 1, r.y - 1, r.right() + 1, r.bottom() + 1);
@@ -1137,12 +1148,52 @@ impl State {
                 };
                 self.label(back, &format!("{} × {}", r.w, r.h), r.x, ly);
             }
+            self.paint_guides(back, sel);
             self.paint_drawing(back);
             self.paint_toolbar(back);
             if self.magnifier && (self.tool.is_capture() || self.tool == Tool::Picker) && !self.over_bar(self.cur) {
                 self.magnifier(back);
             }
             let _ = BitBlt(hdc, 0, 0, self.w, self.h, Some(back), 0, 0, SRCCOPY);
+        }
+    }
+
+    /// Crosshair lines through the cursor and the rule-of-thirds grid of the selection (both optional).
+    ///
+    /// # Safety
+    /// `dc` must be a valid DC.
+    unsafe fn paint_guides(&self, dc: HDC, sel: Option<Rect>) {
+        let cross = self.crosshair && self.tool.is_capture() && !self.over_bar(self.cur);
+        let grid = sel.filter(|r| self.thirds && r.w >= 90 && r.h >= 90);
+        if !cross && grid.is_none() {
+            return;
+        }
+        // SAFETY: valid DC; the pens are deselected and deleted before returning.
+        unsafe {
+            if cross {
+                let pen = CreatePen(PS_SOLID, 1, self.accent);
+                let old = SelectObject(dc, pen.into());
+                let (x, y) = self.cur;
+                let _ = MoveToEx(dc, 0, y, None);
+                let _ = LineTo(dc, self.w, y);
+                let _ = MoveToEx(dc, x, 0, None);
+                let _ = LineTo(dc, x, self.h);
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            }
+            if let Some(r) = grid {
+                let pen = CreatePen(PS_SOLID, 1, rgb(255, 255, 255));
+                let old = SelectObject(dc, pen.into());
+                for i in 1..=2 {
+                    let (x, y) = (r.x + r.w * i / 3, r.y + r.h * i / 3);
+                    let _ = MoveToEx(dc, x, r.y, None);
+                    let _ = LineTo(dc, x, r.bottom());
+                    let _ = MoveToEx(dc, r.x, y, None);
+                    let _ = LineTo(dc, r.right(), y);
+                }
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            }
         }
     }
 
@@ -1162,7 +1213,7 @@ impl State {
                 };
                 let w = (self.width.round() as i32).max(1);
                 let (style, width, col) = match self.tool {
-                    Tool::Blur | Tool::Pixelate | Tool::Spotlight => (PS_DOT, 1, ACCENT),
+                    Tool::Blur | Tool::Pixelate | Tool::Spotlight => (PS_DOT, 1, self.accent),
                     Tool::Marker => (PS_SOLID, w * 5, rgba(self.color)),
                     _ => (PS_SOLID, w, rgba(self.color)),
                 };
@@ -1277,14 +1328,14 @@ impl State {
                     let col = if self.tool == Tool::Eraser {
                         rgb(235, 90, 90)
                     } else {
-                        ACCENT
+                        self.accent
                     };
                     outline(o, PS_DOT, col);
                 }
             }
             if let Some(o) = self.live_selection() {
-                outline(o, PS_DASH, ACCENT);
-                let pen = CreatePen(PS_SOLID, 2, ACCENT);
+                outline(o, PS_DASH, self.accent);
+                let pen = CreatePen(PS_SOLID, 2, self.accent);
                 let br = CreateSolidBrush(rgb(255, 255, 255));
                 let (op, ob) = (SelectObject(dc, pen.into()), SelectObject(dc, br.into()));
                 for h in o.shape.edit_handles() {
@@ -1425,7 +1476,7 @@ impl State {
                 let (fill, ring, ring_w) = match b.kind {
                     Btn::Color(i) => (
                         self.palette.get(i).copied().unwrap_or([0, 0, 0, 255]),
-                        if active { ACCENT } else { rgb(110, 114, 130) },
+                        if active { self.accent } else { rgb(110, 114, 130) },
                         if active { 3 } else { 1 },
                     ),
                     _ => (self.color, rgb(235, 238, 248), 2),
@@ -1442,7 +1493,7 @@ impl State {
             }
             if active || hot {
                 let br = CreateSolidBrush(if active { rgb(38, 79, 150) } else { rgb(50, 54, 68) });
-                let pen = CreatePen(PS_SOLID, 1, if active { ACCENT } else { rgb(70, 74, 90) });
+                let pen = CreatePen(PS_SOLID, 1, if active { self.accent } else { rgb(70, 74, 90) });
                 let (ob, op) = (SelectObject(dc, br.into()), SelectObject(dc, pen.into()));
                 let _ = RoundRect(dc, r.x, r.y, r.right(), r.bottom(), 8, 8);
                 SelectObject(dc, ob);
@@ -1704,7 +1755,7 @@ impl State {
             SelectObject(dc, old);
             let _ = DeleteObject(grid.into());
             // centre pixel and frame
-            let pen = CreatePen(PS_SOLID, 2, ACCENT);
+            let pen = CreatePen(PS_SOLID, 2, self.accent);
             let old_pen = SelectObject(dc, pen.into());
             let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
             let c = (MAG_SRC / 2) * MAG_ZOOM;

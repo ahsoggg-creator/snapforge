@@ -542,9 +542,10 @@ impl Document {
     /// Puts the picture on a coloured background with rounded corners and a shadow; objects keep their place on it.
     pub fn beautify(&mut self, o: &render::Beautify) {
         let pad = o.padding.min(400) as f32;
+        let bar = o.bar_height(self.base.width()) as f32;
         self.base = Arc::new(render::beautify(&self.base, o));
         for ob in &mut self.objects {
-            ob.shape.translate(pad, pad);
+            ob.shape.translate(pad, pad + bar);
         }
     }
 
@@ -750,6 +751,80 @@ mod tests {
             "the corner of the picture is rounded off: {corner:?}"
         );
         assert_eq!(d.base.get_pixel(0, 0)[3], 255, "the background is opaque");
+    }
+
+    #[test]
+    fn a_title_bar_adds_height_and_moves_the_objects_down() {
+        let mut d = arrow_doc();
+        let (w, h) = d.size();
+        let o = render::Beautify {
+            padding: 10,
+            shadow: false,
+            chrome: render::Chrome::Dark,
+            ..render::Beautify::default()
+        };
+        let bar = o.bar_height(w);
+        assert!(bar >= 28);
+        d.beautify(&o);
+        assert_eq!(d.size(), (w + 20, h + bar + 20));
+        let Shape::Line { a, .. } = &d.objects[0].shape else {
+            panic!()
+        };
+        assert_eq!((a.x, a.y), (20.0, 15.0 + bar as f32));
+        let dot = d.base.get_pixel(10 + (bar as f32 * 0.55) as u32, 10 + bar / 2).0;
+        assert_eq!(dot, [255, 95, 86, 255], "the first window button is red");
+        assert_eq!(
+            d.base.get_pixel(10 + w / 2, 10 + 2).0,
+            [38, 38, 42, 255],
+            "the bar is dark"
+        );
+    }
+
+    #[test]
+    fn the_gradient_follows_the_angle() {
+        let img = RgbaImage::from_pixel(10, 10, image::Rgba([0, 0, 0, 255]));
+        let (top, bottom) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+        let flat = |angle| {
+            render::beautify(
+                &img,
+                &render::Beautify {
+                    padding: 40,
+                    shadow: false,
+                    radius: 0,
+                    top,
+                    bottom,
+                    angle,
+                    ..render::Beautify::default()
+                },
+            )
+        };
+        let down = flat(0);
+        assert_eq!(down.get_pixel(0, 0).0, top);
+        assert_eq!(down.get_pixel(0, 89).0, bottom);
+        assert_eq!(
+            down.get_pixel(0, 0).0,
+            down.get_pixel(89, 0).0,
+            "0 deg: rows are uniform"
+        );
+        let right = flat(90);
+        assert_eq!(right.get_pixel(0, 0).0, top);
+        assert_eq!(right.get_pixel(89, 0).0, bottom);
+        assert_eq!(
+            right.get_pixel(0, 0).0,
+            right.get_pixel(0, 89).0,
+            "90 deg: columns are uniform"
+        );
+        let diag = flat(45);
+        assert_eq!(diag.get_pixel(0, 0).0, top);
+        assert_eq!(diag.get_pixel(89, 89).0, bottom);
+    }
+
+    #[test]
+    fn a_saved_frame_without_the_new_fields_still_loads() {
+        let o: render::Beautify = serde_json::from_str(r#"{"padding":10,"radius":3}"#).unwrap();
+        assert_eq!((o.padding, o.radius, o.angle), (10, 3, 0));
+        assert_eq!(o.chrome, render::Chrome::None);
+        assert_eq!(o.top, render::Beautify::default().top);
     }
 
     #[test]

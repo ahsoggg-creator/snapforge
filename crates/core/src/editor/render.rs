@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 use tiny_skia::{
     Color as SkColor, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
 };
@@ -105,14 +106,28 @@ fn from_pixmap(pm: &Pixmap) -> RgbaImage {
     RgbaImage::from_raw(pm.width(), pm.height(), out).expect("same size")
 }
 
-/// "Frame" around a screenshot: gradient background, rounded corners, drop shadow.
-#[derive(Clone, Debug, PartialEq)]
+/// A title bar drawn above the screenshot, so it looks like an app window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Chrome {
+    #[default]
+    None,
+    Dark,
+    Light,
+}
+
+/// "Frame" around a screenshot: gradient background, rounded corners, drop shadow, optional title bar.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Beautify {
     pub padding: u32,
     pub radius: u32,
     pub shadow: bool,
     pub top: Color,
     pub bottom: Color,
+    /// Gradient direction in degrees: 0 runs from `top` down to `bottom`, 90 from left to right.
+    pub angle: u16,
+    pub chrome: Chrome,
 }
 
 impl Default for Beautify {
@@ -123,8 +138,72 @@ impl Default for Beautify {
             shadow: true,
             top: [96, 165, 250, 255],
             bottom: [168, 85, 247, 255],
+            angle: 0,
+            chrome: Chrome::None,
         }
     }
+}
+
+/// Ready-made backgrounds: `(name key, top, bottom, angle)`.
+pub const BEAUTIFY_PRESETS: [(&str, Color, Color, u16); 8] = [
+    ("bg.sky", [96, 165, 250, 255], [168, 85, 247, 255], 0),
+    ("bg.sunset", [251, 146, 60, 255], [219, 39, 119, 255], 35),
+    ("bg.ocean", [34, 211, 238, 255], [37, 99, 235, 255], 45),
+    ("bg.mint", [167, 243, 208, 255], [52, 211, 153, 255], 20),
+    ("bg.night", [30, 41, 59, 255], [88, 28, 135, 255], 60),
+    ("bg.peach", [254, 215, 170, 255], [253, 164, 175, 255], 90),
+    ("bg.mono", [229, 231, 235, 255], [156, 163, 175, 255], 0),
+    ("bg.ink", [24, 24, 27, 255], [63, 63, 70, 255], 0),
+];
+
+impl Beautify {
+    /// The look of `BEAUTIFY_PRESETS[i]` (colours and angle) with the rest of `self` kept.
+    pub fn with_preset(&self, i: usize) -> Beautify {
+        let (_, top, bottom, angle) = BEAUTIFY_PRESETS[i % BEAUTIFY_PRESETS.len()];
+        Beautify {
+            top,
+            bottom,
+            angle,
+            ..self.clone()
+        }
+    }
+
+    /// Pixels the title bar adds on top of a picture `w` wide (0 without one).
+    pub fn bar_height(&self, w: u32) -> u32 {
+        match self.chrome {
+            Chrome::None => 0,
+            _ => (w as f32 / 24.0).clamp(28.0, 44.0) as u32,
+        }
+    }
+}
+
+/// The picture with a title bar (three window buttons) above it.
+fn with_chrome(base: &RgbaImage, o: &Beautify) -> RgbaImage {
+    let (w, h) = base.dimensions();
+    let bar = o.bar_height(w);
+    if bar == 0 {
+        return base.clone();
+    }
+    let bar_color: Color = match o.chrome {
+        Chrome::Light => [236, 236, 238, 255],
+        _ => [38, 38, 42, 255],
+    };
+    let mut out = RgbaImage::from_pixel(w, h + bar, image::Rgba(bar_color));
+    image::imageops::replace(&mut out, base, 0, bar as i64);
+    let mut pm = to_pixmap(&out);
+    let r = bar as f32 * 0.17;
+    for (i, c) in [[255u8, 95, 86, 255], [255, 189, 46, 255], [39, 201, 63, 255]]
+        .into_iter()
+        .enumerate()
+    {
+        let cx = bar as f32 * (0.55 + 0.5 * i as f32);
+        let mut pb = PathBuilder::new();
+        pb.push_circle(cx, bar as f32 / 2.0, r);
+        if let Some(p) = pb.finish() {
+            pm.fill_path(&p, &paint(c), FillRule::Winding, Transform::identity(), None);
+        }
+    }
+    from_pixmap(&pm)
 }
 
 fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
@@ -146,16 +225,21 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
 
 /// The picture inside `o.padding` pixels of vertical gradient, with rounded corners and an optional shadow.
 pub fn beautify(base: &RgbaImage, o: &Beautify) -> RgbaImage {
+    let framed = with_chrome(base, o);
+    let base = &framed;
     let (w, h) = base.dimensions();
     let pad = o.padding.min(400);
     let (cw, ch) = (w + 2 * pad, h + 2 * pad);
     let mut bg = RgbaImage::new(cw, ch);
+    let (sin, cos) = (f32::from(o.angle % 360).to_radians()).sin_cos();
+    let (mx, my) = ((cw.max(2) - 1) as f32, (ch.max(2) - 1) as f32);
+    let extent = (mx * sin.abs() + my * cos.abs()).max(1.0);
     for (y, row) in bg.rows_mut().enumerate() {
-        let t = y as f32 / (ch.max(2) - 1) as f32;
-        let lerp = |i: usize| (o.top[i] as f32 + (o.bottom[i] as f32 - o.top[i] as f32) * t).round() as u8;
-        let px = image::Rgba([lerp(0), lerp(1), lerp(2), 255]);
-        for p in row {
-            *p = px;
+        for (x, p) in row.enumerate() {
+            let along = (x as f32 - mx / 2.0) * sin + (y as f32 - my / 2.0) * cos;
+            let t = (0.5 + along / extent).clamp(0.0, 1.0);
+            let lerp = |i: usize| (o.top[i] as f32 + (o.bottom[i] as f32 - o.top[i] as f32) * t).round() as u8;
+            *p = image::Rgba([lerp(0), lerp(1), lerp(2), 255]);
         }
     }
     let mut pm = to_pixmap(&bg);

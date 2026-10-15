@@ -297,6 +297,9 @@ impl App {
                 bottom: s.overlay_toolbar == ToolbarPos::Bottom,
                 dim: s.overlay_dim,
                 magnifier: s.overlay_magnifier,
+                crosshair: s.overlay_crosshair,
+                thirds: s.overlay_thirds,
+                accent: s.overlay_accent,
                 redo_label: self.t("otool.redo").to_owned(),
                 fill_label: self.t("otool.fill").to_owned(),
                 select_hint: self.t("sel.hint_select").to_owned(),
@@ -376,6 +379,12 @@ impl App {
         self.capturing = false;
         match msg {
             CapMsg::Done(shot, memory) => {
+                if !self.flags.demo {
+                    crate::winint::play_capture_sound(
+                        self.settings.capture_sound,
+                        self.settings.capture_sound_file.as_deref(),
+                    );
+                }
                 self.remember_overlay(memory);
                 // the history gets the picture only after the chain ran, so redactions are never bypassed
                 self.begin_post(ctx, shot);
