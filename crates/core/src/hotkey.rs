@@ -54,6 +54,11 @@ const NAMED: &[(&str, u32)] = &[
     ("backspace", 0x08),
 ];
 
+/// A single key (no modifiers) by name: `A`, `7`, `F5`, `PrintScreen`, `Space`…
+pub fn parse_single_key(name: &str) -> Option<u32> {
+    key_from_name(name.trim())
+}
+
 fn key_from_name(name: &str) -> Option<u32> {
     let n = name.to_ascii_lowercase();
     if n.len() == 1 {
@@ -72,6 +77,10 @@ fn key_from_name(name: &str) -> Option<u32> {
         return Some(0x70 + k - 1);
     }
     NAMED.iter().find(|(k, _)| *k == n).map(|(_, v)| *v)
+}
+
+pub fn key_label(vk: u32) -> String {
+    key_name(vk)
 }
 
 fn key_name(vk: u32) -> String {
@@ -228,7 +237,7 @@ impl Profile {
 }
 
 #[cfg(windows)]
-pub use win::{HotkeyManager, Registered, probe_system};
+pub use win::{HotkeyManager, Registered, poll_pressed_combo, probe_system};
 
 #[cfg(windows)]
 mod win {
@@ -265,6 +274,34 @@ mod win {
             m |= W_WIN;
         }
         m
+    }
+
+    /// The key combination held down right now, if any key besides the modifiers is down. Unlike window key events
+    /// this also sees `PrintScreen`, which is how the settings screen can record any combination.
+    pub fn poll_pressed_combo() -> Option<Combo> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let down = |vk: u32| -> bool {
+            // SAFETY: a plain read of the keyboard state.
+            unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+        };
+        let mut mods = 0u8;
+        if down(0x11) {
+            mods |= MOD_CTRL;
+        }
+        if down(0x12) {
+            mods |= MOD_ALT;
+        }
+        if down(0x10) {
+            mods |= MOD_SHIFT;
+        }
+        if down(0x5B) || down(0x5C) {
+            mods |= MOD_WIN;
+        }
+        // 0x08..=0xFE minus the modifiers (Shift/Ctrl/Alt, both Win keys, left/right variants) and the mouse buttons
+        (0x08u32..=0xFE)
+            .filter(|vk| !matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5))
+            .find(|vk| down(*vk))
+            .map(|vk| Combo { mods, vk })
     }
 
     /// Asks Windows whether `combo` is free by registering and immediately releasing it.

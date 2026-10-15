@@ -33,6 +33,8 @@ pub struct WorkResult {
 
 pub struct Pending {
     pub image: RgbaImage,
+    /// The screen without annotations plus the layers drawn in the overlay (opened as editable layers).
+    pub editable: Option<(RgbaImage, Vec<snapforge_core::editor::Object>)>,
     pub app: String,
     pub preset: Preset,
     pub stage: Stage,
@@ -158,11 +160,18 @@ impl Sink for WorkerSink {
 
 impl App {
     /// Entry point after a capture: the panel (or the active preset straight away).
-    pub fn begin_post(&mut self, ctx: &egui::Context, image: RgbaImage, app: String) {
-        let preset = self.settings.post.active_preset().clone();
+    pub fn begin_post(&mut self, ctx: &egui::Context, shot: crate::capture_flow::Shot) {
+        let mut preset = self.settings.post.active_preset().clone();
+        if shot.privacy {
+            // the shield in the overlay: hide sensitive text (and faces, when the model is installed) for this shot
+            preset.hide_sensitive = true;
+            preset.blur_faces = face::model_state() == face::ModelState::Ready;
+        }
+        let editable = shot.base.map(|b| (b, shot.objects)).filter(|(_, o)| !o.is_empty());
         self.pending = Some(Pending {
-            image,
-            app,
+            image: shot.image,
+            app: shot.app,
+            editable,
             preset,
             stage: Stage::Choose,
             findings: None,
@@ -342,6 +351,7 @@ impl App {
             self.view = View::PostCapture;
             self.pending = Some(Pending {
                 stage: Stage::Done(res.reports),
+                editable: None,
                 image: res.output,
                 work_rx: None,
                 ..p
@@ -652,7 +662,10 @@ impl App {
                     } else {
                         None
                     };
-                    self.open_editor(ctx, p.image, p.app, id);
+                    match p.editable {
+                        Some((base, objects)) => self.open_editor_layers(ctx, base, objects, p.app, id),
+                        None => self.open_editor(ctx, p.image, p.app, id),
+                    }
                 }
             }
             PostAct::Discard => {

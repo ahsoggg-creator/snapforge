@@ -20,8 +20,9 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.3.0)
+## Features (0.4.0)
 
+- **Capture overlay (0.4.0).** A top toolbar like ShareX: modes region, window, monitor under the cursor and "text from region (OCR) straight to the clipboard"; tools rectangle, ellipse, line, arrow, pencil, marker, text, numbered step, blur, pixelate; colour, thickness, undo and "hide sensitive data after capture". Everything drawn in the overlay arrives in the editor as separate editable objects. Tool keys are configurable (duplicates and reserved keys are rejected); global hotkeys can be recorded with any key, including PrintScreen and Win, and apply immediately; there is a "Reset to defaults" button.
 - **Capture:** region (frozen frame, magnifier next to the cursor, pixel-exact selection, arrow keys nudge the
   cursor by 1 px, Shift: 10), window, full screen, a single monitor. Multiple monitors with different scaling: all
   coordinates are physical pixels of the virtual desktop and a region spanning monitors is stitched from pieces.
