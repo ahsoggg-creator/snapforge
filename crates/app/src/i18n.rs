@@ -485,8 +485,8 @@ const TABLE: &[(&str, &str, &str)] = &[
     ),
     (
         "otool.eraser",
-        "Ластик (стирает нарисованное)",
-        "Eraser (wipes what you drew)",
+        "Ластик (стирает нарисованное кистью)",
+        "Eraser (rubs out what you drew with a brush)",
     ),
     (
         "otool.picker",
@@ -502,8 +502,8 @@ const TABLE: &[(&str, &str, &str)] = &[
     ),
     (
         "sel.hint_eraser",
-        "Проведите по нарисованному, чтобы стереть · Ctrl+Z вернёт · правая кнопка — отмена",
-        "Drag over what you drew to wipe it · Ctrl+Z brings it back · right click cancels",
+        "Закрашивайте нарисованное, как ластиком (сам снимок не трогается) · размер кисти = толщина линии · Ctrl+Z вернёт",
+        "Rub out what you drew like with an eraser (the screenshot itself stays) · brush size = line width · Ctrl+Z brings it back",
     ),
     (
         "sel.hint_picker",

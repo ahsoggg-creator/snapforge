@@ -344,6 +344,11 @@ impl EditorState {
         self.dirty = true;
     }
 
+    /// Diameter of the eraser brush in image pixels: follows the line width, never a hairline.
+    fn eraser_size(&self) -> f32 {
+        (self.width * 4.0).max(12.0)
+    }
+
     fn shape_for(&self, tool: Tool, p: Pt) -> Option<Shape> {
         Some(match tool {
             Tool::Arrow => Shape::Arrow { a: p, b: p },
@@ -360,6 +365,7 @@ impl EditorState {
             },
             Tool::Pencil => Shape::Pencil { pts: vec![p] },
             Tool::Marker => Shape::Marker { pts: vec![p] },
+            Tool::Eraser => Shape::Erase { pts: vec![p] },
             Tool::Blur => Shape::Blur { a: p, b: p, radius: 10 },
             Tool::Pixelate => Shape::Pixelate { a: p, b: p, block: 10 },
             Tool::Spotlight => Shape::Spotlight { a: p, b: p },
@@ -383,7 +389,7 @@ impl EditorState {
                 | Shape::Chart { b, .. }
                 | Shape::Spotlight { b, .. }
                 | Shape::Pixelate { b, .. } => *b = p,
-                Shape::Pencil { pts } | Shape::Marker { pts }
+                Shape::Pencil { pts } | Shape::Marker { pts } | Shape::Erase { pts }
                     if pts.last().is_none_or(|l| (l.x - p.x).hypot(l.y - p.y) > 0.8) =>
                 {
                     pts.push(p);
@@ -491,12 +497,14 @@ impl EditorState {
                     self.crop = Some((p, p));
                     self.gesture = Gesture::Crop(p);
                 }
-                Tool::Text | Tool::Step | Tool::Eraser | Tool::Plugin | Tool::Picker => {}
+                Tool::Text | Tool::Step | Tool::Plugin | Tool::Picker => {}
                 _ => {
                     if let Some(shape) = self.shape_for(tool, p) {
                         self.ed.checkpoint();
-                        let id = self.ed.doc.add(shape, self.color, self.width);
-                        self.selected = Some(id);
+                        let erasing = matches!(shape, Shape::Erase { .. });
+                        let width = if erasing { self.eraser_size() } else { self.width };
+                        let id = self.ed.doc.add(shape, self.color, width);
+                        self.selected = (!erasing).then_some(id);
                         self.gesture = Gesture::Draw(id);
                         self.dirty = true;
                     }
@@ -537,6 +545,15 @@ impl EditorState {
                 self.selected = None;
                 self.dirty = true;
             }
+            // an eraser stroke that passed over nothing drawn is not worth an undo step
+            if let Gesture::Draw(id) = self.gesture
+                && matches!(self.ed.doc.get(id).map(|o| &o.shape), Some(Shape::Erase { .. }))
+                && !self.ed.doc.touches_ink(id)
+            {
+                self.ed.doc.remove(id);
+                self.ed.cancel_checkpoint();
+                self.dirty = true;
+            }
             // a freshly drawn chart asks for its data right away
             if let Gesture::Draw(id) = self.gesture
                 && let Some(Shape::Chart { spec, .. }) = self.ed.doc.get(id).map(|o| o.shape.clone())
@@ -552,11 +569,18 @@ impl EditorState {
             match tool {
                 Tool::Select => self.selected = self.ed.doc.hit_test(p, handle_reach),
                 Tool::Eraser => {
-                    if let Some(id) = self.ed.doc.hit_test(p, handle_reach) {
-                        self.ed.checkpoint();
-                        self.ed.doc.remove(id);
+                    // a click without dragging rubs out one spot
+                    self.ed.checkpoint();
+                    let id = self
+                        .ed
+                        .doc
+                        .add(Shape::Erase { pts: vec![p] }, self.color, self.eraser_size());
+                    if self.ed.doc.touches_ink(id) {
                         self.selected = None;
                         self.dirty = true;
+                    } else {
+                        self.ed.doc.remove(id);
+                        self.ed.cancel_checkpoint();
                     }
                 }
                 Tool::Text => {
@@ -672,8 +696,21 @@ impl EditorState {
                 painter.rect_stroke(hr, 2.0, Stroke::new(1.5, theme::ACCENT), StrokeKind::Outside);
             }
         }
+        if tool == Tool::Eraser
+            && resp.hovered()
+            && let Some(c) = ui.input(|i| i.pointer.hover_pos())
+        {
+            // the brush: a ring as wide as what one stroke wipes
+            let r = (self.eraser_size() * scale / 2.0).max(2.0);
+            painter.circle_stroke(c, r, Stroke::new(3.0, Color32::from_black_alpha(140)));
+            painter.circle_stroke(c, r, Stroke::new(1.5, Color32::WHITE));
+        }
         if tool != Tool::Select && resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            ui.ctx().set_cursor_icon(if tool == Tool::Eraser {
+                egui::CursorIcon::None
+            } else {
+                egui::CursorIcon::Crosshair
+            });
         }
     }
 
@@ -806,6 +843,7 @@ impl EditorState {
                             "pixelate" => "tool.pixelate",
                             "spotlight" => "tool.spotlight",
                             "chart" => "tool.chart",
+                            "erase" => "tool.eraser",
                             _ => "tool.step",
                         })
                     );

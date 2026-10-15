@@ -386,9 +386,12 @@ struct State {
     /// The object the handles belong to (hidden while a capture tool is active).
     selected: Option<u64>,
     edit: Option<Edit>,
-    /// The eraser is held down.
+    /// The eraser is held down; `erase_id` is the stroke it is drawing.
     erasing: bool,
-    erased_any: bool,
+    erase_id: Option<u64>,
+    /// Part of the picture changed since the DIBs were last written: redrawn once, just before painting, so a burst
+    /// of mouse moves costs one render.
+    dirty: Option<Rect>,
     /// Mouse position while the toolbar itself is being dragged; once moved by hand it stays where it was put.
     bar_drag: Option<(i32, i32)>,
     bar_pinned: bool,
@@ -602,7 +605,8 @@ impl State {
                 selected: None,
                 edit: None,
                 erasing: false,
-                erased_any: false,
+                erase_id: None,
+                dirty: None,
                 bar_drag: None,
                 bar_pinned: false,
             };
@@ -619,15 +623,19 @@ impl State {
     /// Copies `img` into the bright DIB and a darkened copy into the dim DIB.
     fn write_pixels(&mut self, img: &RgbaImage) {
         let full = self.full();
-        self.write_pixels_rect(img, full);
+        self.write_pixels_rect(img, (0, 0), full);
     }
 
     /// Like `write_pixels`, for the part of the picture inside `r` only (moving an object touches a small area).
-    fn write_pixels_rect(&mut self, img: &RgbaImage, r: Rect) {
+    /// `at` is where the top-left pixel of `img` sits in the picture (`(0, 0)` for a whole-picture image).
+    fn write_pixels_rect(&mut self, img: &RgbaImage, at: (i32, i32), r: Rect) {
         if self.bright_bits.is_null() || self.dim_bits.is_null() {
             return;
         }
-        let Some(r) = r.intersect(&self.full()) else { return };
+        let img_rect = Rect::new(at.0, at.1, img.width() as i32, img.height() as i32);
+        let Some(r) = r.intersect(&self.full()).and_then(|r| r.intersect(&img_rect)) else {
+            return;
+        };
         let n = (self.w as usize) * (self.h as usize) * 4;
         // SAFETY: both DIB sections were created with w*h BGRA pixels.
         let (bright, dim) = unsafe {
@@ -638,16 +646,17 @@ impl State {
         };
         let keep = 100 - self.dim.min(90) as u32;
         let raw = img.as_raw();
+        let len = r.w as usize * 4;
         for y in r.y..r.bottom() {
             let off = (y as usize * self.w as usize + r.x as usize) * 4;
-            let end = off + r.w as usize * 4;
-            if end > raw.len() || end > n {
+            let src_off = ((y - at.1) as usize * img.width() as usize + (r.x - at.0) as usize) * 4;
+            if off + len > n || src_off + len > raw.len() {
                 return;
             }
-            for ((src, b), d) in raw[off..end]
+            for ((src, b), d) in raw[src_off..src_off + len]
                 .chunks_exact(4)
-                .zip(bright[off..end].chunks_exact_mut(4))
-                .zip(dim[off..end].chunks_exact_mut(4))
+                .zip(bright[off..off + len].chunks_exact_mut(4))
+                .zip(dim[off..off + len].chunks_exact_mut(4))
             {
                 b.copy_from_slice(&[src[2], src[1], src[0], 255]);
                 d.copy_from_slice(&[
@@ -660,16 +669,23 @@ impl State {
         }
     }
 
-    /// Re-renders the base picture with all annotations into the DIBs.
+    /// Marks the whole picture as needing a redraw.
     fn refresh(&mut self) {
-        let img = self.ed.doc.render();
-        self.write_pixels(&img);
+        self.dirty = Some(self.full());
     }
 
-    /// Re-renders, but copies only the area `r` into the DIBs.
+    /// Marks the area `r` as needing a redraw.
     fn refresh_rect(&mut self, r: Rect) {
-        let img = self.ed.doc.render();
-        self.write_pixels_rect(&img, r);
+        self.dirty = Some(self.dirty.map_or(r, |d| d.union(&r)));
+    }
+
+    /// Redraws what changed (only that area, unless it is most of the picture) into the DIBs.
+    fn flush(&mut self) {
+        let Some(r) = self.dirty.take() else { return };
+        let Some(r) = r.intersect(&self.full()) else { return };
+        if let Some((area, img)) = self.ed.doc.render_region(r) {
+            self.write_pixels_rect(&img, (area.x, area.y), area);
+        }
     }
 
     /// The part of the picture a change to `o` can touch: its box with room for arrow heads and the like (a
@@ -911,28 +927,68 @@ impl State {
         self.selected.is_some()
     }
 
-    /// Removes the topmost object within reach of the cursor.
-    fn erase_at_cursor(&mut self) {
-        let tol = (self.width * 1.5).max(8.0);
-        let Some(id) = self.ed.doc.hit_test(self.pt(), tol) else {
-            return;
-        };
-        let Some(o) = self.ed.doc.get(id) else { return };
-        let r = self.dirty_rect(o);
-        self.ed.doc.remove(id);
-        if self.selected == Some(id) {
-            self.selected = None;
-        }
-        self.erased_any = true;
+    /// Diameter of the eraser brush: it follows the line width, but is never a hairline.
+    fn eraser_size(&self) -> f32 {
+        (self.width * 4.0).max(12.0)
+    }
+
+    /// The part of the picture a stretch of eraser stroke from `a` to `b` can change.
+    fn erase_box(&self, a: Pt, b: Pt, size: f32) -> Rect {
+        let m = size / 2.0 + 3.0;
+        Rect::new(
+            (a.x.min(b.x) - m).floor() as i32,
+            (a.y.min(b.y) - m).floor() as i32,
+            ((a.x - b.x).abs() + 2.0 * m).ceil() as i32 + 1,
+            ((a.y - b.y).abs() + 2.0 * m).ceil() as i32 + 1,
+        )
+    }
+
+    /// The mouse went down with the eraser: starts a stroke (one undo step for the whole stroke).
+    fn begin_erase(&mut self) {
+        self.ed.checkpoint();
+        self.erasing = true;
+        self.selected = None;
+        let (p, size) = (self.pt(), self.eraser_size());
+        self.erase_id = Some(self.ed.doc.add(Shape::Erase { pts: vec![p] }, self.color, size));
+        let r = self.erase_box(p, p, size);
         self.refresh_rect(r);
     }
 
-    fn finish_erase(&mut self) {
-        if self.erasing && !self.erased_any {
-            self.ed.cancel_checkpoint();
+    /// The mouse moved with the eraser held down: the stroke grows to the cursor.
+    fn erase_to_cursor(&mut self) {
+        let (Some(id), p) = (self.erase_id, self.pt()) else {
+            return;
+        };
+        let Some(o) = self.ed.doc.get_mut(id) else { return };
+        let size = o.width;
+        let Shape::Erase { pts } = &mut o.shape else { return };
+        if pts.last().is_some_and(|l| (l.x - p.x).hypot(l.y - p.y) < 1.0) {
+            return;
         }
+        pts.push(p);
+        // the curve through the last points bends a little when one is added: redo the last few segments
+        let tail = &pts[pts.len().saturating_sub(4)..];
+        let (lo, hi) = tail.iter().fold((p, p), |(lo, hi), q| {
+            (
+                Pt::new(lo.x.min(q.x), lo.y.min(q.y)),
+                Pt::new(hi.x.max(q.x), hi.y.max(q.y)),
+            )
+        });
+        let r = self.erase_box(lo, hi, size);
+        self.refresh_rect(r);
+    }
+
+    /// The mouse went up: a stroke that passed over nothing drawn leaves no trace and no undo step.
+    fn finish_erase(&mut self) {
         self.erasing = false;
-        self.erased_any = false;
+        let Some(id) = self.erase_id.take() else { return };
+        let Some(o) = self.ed.doc.get(id) else { return };
+        if !self.ed.doc.touches_ink(id) {
+            let r = self.dirty_rect(o);
+            self.ed.doc.remove(id);
+            self.ed.cancel_checkpoint();
+            self.refresh_rect(r);
+        }
     }
 
     fn delete_selected(&mut self) -> bool {
@@ -996,6 +1052,7 @@ impl State {
 
     /// The picker tool: the drawing colour becomes the colour of the pixel under the cursor.
     fn pick_color(&mut self) {
+        self.flush();
         let (r, g, b) = self.pixel(self.cur.0, self.cur.1);
         self.set_color([r, g, b, 255]);
     }
@@ -1318,20 +1375,11 @@ impl State {
                 let _ = DeleteObject(pen.into());
             };
             let idle = self.edit.is_none() && !self.over_bar(self.cur) && self.draw.is_none();
-            if idle && matches!(self.tool, Tool::Select | Tool::Eraser) {
-                let hit = if self.tool == Tool::Eraser {
-                    self.ed.doc.hit_test(self.pt(), (self.width * 1.5).max(8.0))
-                } else {
-                    self.object_at(self.cur)
-                };
-                if let Some(o) = hit.and_then(|id| self.ed.doc.get(id)) {
-                    let col = if self.tool == Tool::Eraser {
-                        rgb(235, 90, 90)
-                    } else {
-                        self.accent
-                    };
-                    outline(o, PS_DOT, col);
-                }
+            if idle
+                && self.tool == Tool::Select
+                && let Some(o) = self.object_at(self.cur).and_then(|id| self.ed.doc.get(id))
+            {
+                outline(o, PS_DOT, self.accent);
             }
             if let Some(o) = self.live_selection() {
                 outline(o, PS_DASH, self.accent);
@@ -1348,7 +1396,7 @@ impl State {
                 let _ = DeleteObject(br.into());
             }
             if self.tool == Tool::Eraser && !self.over_bar(self.cur) {
-                let r = (self.width * 1.5).max(8.0) as i32;
+                let r = (self.eraser_size() / 2.0).round() as i32;
                 let pen = CreatePen(PS_SOLID, 2, rgb(255, 255, 255));
                 let (op, ob) = (
                     SelectObject(dc, pen.into()),
@@ -1817,6 +1865,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
+                st.flush();
                 st.paint(hdc);
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
@@ -1844,7 +1893,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 } else if st.edit.is_some() {
                     st.apply_edit();
                 } else if st.erasing {
-                    st.erase_at_cursor();
+                    st.erase_to_cursor();
                 } else if let Some(d) = &mut st.draw
                     && matches!(st.tool, Tool::Pencil | Tool::Marker)
                 {
@@ -1891,10 +1940,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         }
                     }
                     Tool::Eraser => {
-                        st.ed.checkpoint();
-                        st.erasing = true;
-                        st.erased_any = false;
-                        st.erase_at_cursor();
+                        st.begin_erase();
                         SetCapture(hwnd);
                     }
                     Tool::Picker => st.pick_color(),
@@ -2329,29 +2375,88 @@ mod tests {
     }
 
     #[test]
-    fn the_eraser_wipes_what_it_touches_in_one_undo_step() {
+    fn the_eraser_rubs_out_part_of_a_drawing_in_one_undo_step() {
         with_state(base_request((0, 0), Tool::Rect), |st| {
-            draw_rect(st, (50, 50), (150, 120));
-            draw_rect(st, (250, 50), (350, 120));
+            st.fill = true;
+            draw_rect(st, (50, 50), (250, 150));
+            st.flush();
+            assert_eq!(st.pixel(150, 100), (230, 40, 40));
             st.tool = Tool::Eraser;
-            st.ed.checkpoint();
-            st.erasing = true;
-            for p in [(50, 80), (250, 80)] {
+            st.cur = (60, 100);
+            st.begin_erase();
+            for p in [(120, 100), (180, 100), (240, 100)] {
                 st.cur = p;
-                st.erase_at_cursor();
+                st.erase_to_cursor();
             }
             st.finish_erase();
-            assert!(st.ed.doc.objects.is_empty());
+            st.flush();
+            assert_eq!(st.ed.doc.objects.len(), 2, "the rectangle stays, the stroke is added");
+            assert_eq!(
+                st.pixel(150, 100),
+                (30, 120, 200),
+                "the stroke shows the screenshot, not a hole"
+            );
+            assert_eq!(
+                st.pixel(150, 60),
+                (230, 40, 40),
+                "the rest of the rectangle is still there"
+            );
+            assert_eq!(st.pixel(150, 140), (230, 40, 40));
             st.undo();
-            assert_eq!(st.ed.doc.objects.len(), 2, "one undo restores both");
-            // an eraser stroke that hits nothing adds no undo step
+            st.flush();
+            assert_eq!(st.ed.doc.objects.len(), 1, "one undo takes back the whole stroke");
+            assert_eq!(st.pixel(150, 100), (230, 40, 40));
+            // a stroke over nothing drawn leaves no object and no undo step
             let depth = st.ed.undo_depth();
-            st.ed.checkpoint();
-            st.erasing = true;
             st.cur = (500, 350);
-            st.erase_at_cursor();
+            st.begin_erase();
+            st.cur = (540, 350);
+            st.erase_to_cursor();
             st.finish_erase();
+            assert_eq!(st.ed.doc.objects.len(), 1);
             assert_eq!(st.ed.undo_depth(), depth);
+            assert!(!st.erasing && st.erase_id.is_none());
+        });
+    }
+
+    #[test]
+    fn the_brush_follows_the_line_width() {
+        with_state(base_request((0, 0), Tool::Eraser), |st| {
+            st.set_width(1.0);
+            assert_eq!(st.eraser_size(), 12.0);
+            st.set_width(10.0);
+            assert_eq!(st.eraser_size(), 40.0);
+        });
+    }
+
+    #[test]
+    fn dragging_a_handle_redraws_only_what_changed_and_once() {
+        with_state(base_request((0, 0), Tool::Rect), |st| {
+            draw_rect(st, (100, 100), (200, 160));
+            st.flush();
+            let i = st.handle_at((200, 160)).expect("a handle");
+            assert!(st.start_edit(Some(i)));
+            for p in [(220, 170), (260, 200), (300, 220)] {
+                st.cur = p;
+                st.apply_edit();
+            }
+            let pending = st.dirty.expect("the moves are collected, not drawn one by one");
+            assert!(
+                pending.area() < st.full().area() / 2,
+                "{pending:?} is a small part of the screen"
+            );
+            st.flush();
+            assert!(st.dirty.is_none());
+            let grab = |st: &State| -> Vec<(u8, u8, u8)> {
+                (0..st.h)
+                    .flat_map(|y| (0..st.w).map(move |x| (x, y)))
+                    .map(|(x, y)| st.pixel(x, y))
+                    .collect()
+            };
+            let partial = grab(st);
+            st.refresh();
+            st.flush();
+            assert!(partial == grab(st), "the part redrawn looks exactly like a full redraw");
         });
     }
 

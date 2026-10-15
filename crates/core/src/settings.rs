@@ -42,7 +42,7 @@ pub enum OverlayTool {
     Select,
     /// Dims everything outside the dragged rectangle.
     Spotlight,
-    /// Wipes the drawn objects the cursor passes over.
+    /// Rubs out what was drawn, with a round brush (the screenshot underneath stays).
     Eraser,
     /// Takes the drawing colour from a pixel of the screen.
     Picker,
