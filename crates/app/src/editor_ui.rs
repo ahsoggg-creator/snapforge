@@ -1,6 +1,7 @@
 //! The image editor screen: tools, canvas (zoom/pan, drawing, selection), properties and layers.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{
     self, Color32, Key, PointerButton, Pos2, Rect as ERect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions,
@@ -29,6 +30,8 @@ pub enum Tool {
     Step,
     Chart,
     Eraser,
+    /// A tool registered by a plugin (see `EditorState::plugin_tool`); not part of `ALL`.
+    Plugin,
 }
 
 impl Tool {
@@ -65,6 +68,7 @@ impl Tool {
             Tool::Step => "tool.step",
             Tool::Chart => "tool.chart",
             Tool::Eraser => "tool.eraser",
+            Tool::Plugin => "tool.select",
         }
     }
 }
@@ -99,6 +103,10 @@ pub struct EditorState {
     text_checkpointed: bool,
     focus_text: bool,
     pub chart_dialog: Option<ChartDialog>,
+    /// `(plugin id, tool id)` of the active plugin tool.
+    pub plugin_tool: Option<(String, String)>,
+    /// A click waiting to be handed to a plugin tool: `(plugin id, tool id, x, y)` in image pixels.
+    pub tool_click: Option<(String, String, i64, i64)>,
 }
 
 /// Data editor for a chart object (opened after drawing one, or from the properties panel).
@@ -139,6 +147,8 @@ impl EditorState {
             text_checkpointed: false,
             focus_text: false,
             chart_dialog: None,
+            plugin_tool: None,
+            tool_click: None,
         }
     }
 
@@ -166,6 +176,13 @@ impl EditorState {
             slot => *slot = Some(ctx.load_texture("editor-image", ci, opts)),
         }
         self.dirty = false;
+    }
+
+    /// Replaces the base picture (objects stay where they are); undoable.
+    pub fn replace_base(&mut self, img: RgbaImage) {
+        self.ed.checkpoint();
+        self.ed.doc.base = Arc::new(img);
+        self.dirty = true;
     }
 
     fn do_undo(&mut self) {
@@ -368,7 +385,7 @@ impl EditorState {
                     self.crop = Some((p, p));
                     self.gesture = Gesture::Crop(p);
                 }
-                Tool::Text | Tool::Step | Tool::Eraser => {}
+                Tool::Text | Tool::Step | Tool::Eraser | Tool::Plugin => {}
                 _ => {
                     if let Some(shape) = self.shape_for(tool, p) {
                         self.ed.checkpoint();
@@ -450,6 +467,11 @@ impl EditorState {
                     self.selected = Some(id);
                     self.focus_text = true;
                     self.dirty = true;
+                }
+                Tool::Plugin => {
+                    if let Some((pid, id)) = self.plugin_tool.clone() {
+                        self.tool_click = Some((pid, id, p.x as i64, p.y as i64));
+                    }
                 }
                 Tool::Step => {
                     self.ed.checkpoint();
@@ -769,6 +791,25 @@ impl App {
                     }
                 }
             }
+            let plugin_tools = self.plugins.host.tools();
+            if !plugin_tools.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new(t("ed.plugin_tools")).weak().small());
+                for pt in &plugin_tools {
+                    let sel = es.tool == Tool::Plugin
+                        && es.plugin_tool.as_ref() == Some(&(pt.plugin_id.clone(), pt.id.clone()));
+                    if ui
+                        .add_sized([124.0, 26.0], egui::Button::selectable(sel, &pt.title))
+                        .on_hover_text(&pt.plugin_name)
+                        .clicked()
+                    {
+                        es.tool = Tool::Plugin;
+                        es.plugin_tool = Some((pt.plugin_id.clone(), pt.id.clone()));
+                        es.crop = None;
+                        es.selected = None;
+                    }
+                }
+            }
             if es.tool == Tool::Crop && es.crop.is_some() {
                 ui.separator();
                 if theme::primary_button(ui, t("ed.apply_crop")).clicked() {
@@ -783,6 +824,25 @@ impl App {
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             es.canvas(ui);
         });
+        // a click with a plugin tool: the plugin works on the base picture and its result replaces it
+        if let Some((pid, id, x, y)) = es.tool_click.take() {
+            let (host, base, ctx2) = (self.plugins.host.clone(), (*es.ed.doc.base).clone(), ui.ctx().clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(host.run_tool(&pid, &id, &base, x, y));
+                ctx2.request_repaint();
+            });
+            self.tool_rx = Some(rx);
+        }
+        if let Some(rx) = &self.tool_rx
+            && let Ok((img, report)) = rx.try_recv()
+        {
+            self.tool_rx = None;
+            if let Some(img) = img {
+                es.replace_base(img);
+            }
+            let _ = self.plugins.reports_tx.send(report);
+        }
 
         let ctx = ui.ctx().clone();
         chart_dialog_ui(&ctx, &mut es, &t);

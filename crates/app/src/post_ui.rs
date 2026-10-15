@@ -71,6 +71,8 @@ struct WorkerSink {
     app: String,
     demo: bool,
     store: Arc<dyn SecretStore>,
+    host: Arc<snapforge_core::plugin::host::PluginHost>,
+    reports: std::sync::mpsc::Sender<snapforge_core::plugin::host::PluginReport>,
     saved: Option<PathBuf>,
     editor: bool,
 }
@@ -90,7 +92,16 @@ impl Sink for WorkerSink {
         }
         let s = &self.settings;
         let stem = naming::expand(&s.name_template, &self.app, chrono::Local::now().naive_local());
-        let path = output::save_to_dir(img, &s.save_dir, &stem, s.format, s.jpeg_quality).map_err(|e| e.to_string())?;
+        // plugins may adjust the picture right before it is written, and are told where it went
+        let (marked, reports) = self.host.on_before_save(img.clone(), &self.app, s.format.ext());
+        for r in reports {
+            let _ = self.reports.send(r);
+        }
+        let path =
+            output::save_to_dir(&marked, &s.save_dir, &stem, s.format, s.jpeg_quality).map_err(|e| e.to_string())?;
+        for r in self.host.on_after_save(&path) {
+            let _ = self.reports.send(r);
+        }
         let note = path.display().to_string();
         self.saved = Some(path);
         Ok(note)
@@ -197,6 +208,7 @@ impl App {
     }
 
     pub fn post_finish(&mut self, ctx: &egui::Context) {
+        let (host, reports_tx) = (self.plugins.host.clone(), self.plugins.reports_tx.clone());
         let (settings, demo, opts, store) = (
             self.settings.clone(),
             self.flags.demo,
@@ -227,8 +239,19 @@ impl App {
         let (img, preset, app, ctx2) = (p.image.clone(), p.preset.clone(), p.app.clone(), ctx.clone());
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let out = post::transform(&img, &preset, &opts, &approved);
+            let mut out = post::transform(&img, &preset, &opts, &approved);
+            for key in &preset.plugin_actions {
+                if let Some((plugin, action)) = key.split_once('/') {
+                    let (new, report) = host.run_action(plugin, action, &out);
+                    let _ = reports_tx.send(report);
+                    if let Some(n) = new {
+                        out = n;
+                    }
+                }
+            }
             let mut sink = WorkerSink {
+                host: host.clone(),
+                reports: reports_tx.clone(),
                 settings,
                 app,
                 demo,
@@ -345,6 +368,7 @@ impl App {
             );
             p.preview = Some(ctx.load_texture("post-preview", ci, egui::TextureOptions::LINEAR));
         }
+        let plugin_actions = self.plugins.host.actions();
         let model_ready = face::model_state() == face::ModelState::Ready;
         let (presets, active): (Vec<String>, usize) = (
             self.settings.post.presets.iter().map(|p| p.name.clone()).collect(),
@@ -423,6 +447,19 @@ impl App {
                     });
                     ui.checkbox(&mut pr.watermark, t("post.watermark"));
                     ui.checkbox(&mut pr.downscale, t("post.downscale"));
+                    for e in &plugin_actions {
+                        let key = format!("{}/{}", e.plugin_id, e.id);
+                        let mut on = pr.plugin_actions.contains(&key);
+                        if ui
+                            .checkbox(&mut on, format!("{} — {}", e.plugin_name, e.title))
+                            .changed()
+                        {
+                            pr.plugin_actions.retain(|k| k != &key);
+                            if on {
+                                pr.plugin_actions.push(key);
+                            }
+                        }
+                    }
                     ui.add_space(4.0);
                     ui.label(RichText::new(t("post.outputs")).strong());
                     ui.checkbox(&mut pr.save, t("post.save"));
@@ -678,6 +715,54 @@ fn mask(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real save path: a plugin's `on_before_save` changes what is written and `on_after_save` learns the path.
+    #[test]
+    fn saving_runs_the_plugin_hooks() {
+        use snapforge_core::plugin::host::{DryEnv, PluginHost};
+        use snapforge_core::plugin::runtime::Limits;
+        use snapforge_core::plugin::store::{Store, TEMPLATES};
+        let root = std::env::temp_dir().join(format!("sf-sink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(root.join("plugins"));
+        store.create(&TEMPLATES[1], true).unwrap(); // Watermark: on_before_save draws a mark
+        let (etx, _erx) = std::sync::mpsc::channel();
+        let host = Arc::new(PluginHost::load(
+            &store,
+            Arc::new(DryEnv { events: etx }),
+            &Limits::default(),
+        ));
+        assert_eq!(host.len(), 1);
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        let settings = Settings {
+            save_dir: root.join("shots"),
+            ..Settings::default()
+        };
+        let mut sink = WorkerSink {
+            settings,
+            app: "app".into(),
+            demo: false,
+            store: Arc::new(snapforge_core::secrets::MemoryStore::default()),
+            host,
+            reports: rtx,
+            saved: None,
+            editor: false,
+        };
+        let img = RgbaImage::from_pixel(800, 400, snapforge_core::image::Rgba([255, 255, 255, 255]));
+        sink.save(&img).expect("save");
+        let path = sink.saved.clone().expect("path");
+        let written = snapforge_core::image::open(&path).unwrap().to_rgba8();
+        if snapforge_core::editor::render::has_font() {
+            assert_ne!(written, img, "the plugin's watermark is in the saved file");
+        }
+        assert_eq!(written.get_pixel(2, 2), img.get_pixel(2, 2));
+        assert_eq!(
+            rrx.try_iter().filter(|r| r.hook == "on_before_save").count(),
+            1,
+            "the hook reported"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn masking_hides_the_middle_of_secrets() {

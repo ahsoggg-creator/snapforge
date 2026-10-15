@@ -109,8 +109,12 @@ impl App {
             // the demo never touches the screen: it produces an invented window
             let i = self.demo_counter;
             self.demo_counter += 1;
+            let (image, reports) = self.plugins.host.on_capture(demo::demo_image(i, 1100, 640));
+            for r in reports {
+                let _ = self.plugins.reports_tx.send(r);
+            }
             let shot = Shot {
-                image: demo::demo_image(i, 1100, 640),
+                image,
                 app: demo::app_name(i).to_owned(),
             };
             let _ = self.cap_tx.send(CapMsg::Done(shot));
@@ -131,11 +135,17 @@ impl App {
                 "sel.hint_region"
             })
             .to_owned();
+        let (host, reports_tx) = (self.plugins.host.clone(), self.plugins.reports_tx.clone());
         std::thread::spawn(move || {
             // give the window time to disappear from the screen
             std::thread::sleep(std::time::Duration::from_millis(if visible { 280 } else { 60 }));
             let msg = match grab(action, monitor, delay, cursor, hint) {
-                Ok(Some(shot)) => {
+                Ok(Some(mut shot)) => {
+                    let (image, reports) = host.on_capture(shot.image);
+                    shot.image = image;
+                    for r in reports {
+                        let _ = reports_tx.send(r);
+                    }
                     diag::log(
                         diag::Level::Info,
                         &format!("captured {}x{}", shot.image.width(), shot.image.height()),

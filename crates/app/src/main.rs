@@ -11,8 +11,10 @@ mod demo_tour;
 mod diag;
 mod dragout;
 mod editor_ui;
+mod highlight;
 mod i18n;
 mod installer;
+mod plugin_ui;
 mod post_ui;
 mod selector;
 mod settings_extra;
@@ -52,6 +54,7 @@ pub enum View {
     History,
     Editor,
     PostCapture,
+    Plugins,
     Settings,
 }
 
@@ -76,6 +79,13 @@ pub struct App {
     pub thumbs: HashMap<String, TextureHandle>,
     pub editor: Option<EditorState>,
     pub pending: Option<post_ui::Pending>,
+    pub plugins: plugin_ui::PluginsState,
+    pub tool_rx: Option<
+        Receiver<(
+            Option<snapforge_core::RgbaImage>,
+            snapforge_core::plugin::host::PluginReport,
+        )>,
+    >,
     pub ocr_state: Option<editor_ui::OcrState>,
     pub model_dl: Option<settings_extra::ModelDownload>,
     pub confirm_uploads: bool,
@@ -149,6 +159,8 @@ impl App {
             thumbs: HashMap::new(),
             editor: None,
             pending: None,
+            plugins: plugin_ui::PluginsState::new(paths::plugins_dir()),
+            tool_rx: None,
             ocr_state: None,
             model_dl: None,
             confirm_uploads: false,
@@ -198,6 +210,10 @@ impl App {
             }
         }
         if demo {
+            for t in &snapforge_core::plugin::store::TEMPLATES {
+                let _ = app.plugins.store.create(t, true);
+            }
+            app.plugins.reload(true);
             for i in 0..9 {
                 let img = demo::demo_image(i, 960, 600);
                 let _ = app
@@ -337,6 +353,7 @@ impl App {
             self.on_capture_msg(ctx, m);
         }
         self.post_poll(ctx);
+        self.plugins_poll(ctx);
         while let Ok((text, error)) = self.toast_rx.try_recv() {
             self.notify(text, error);
         }

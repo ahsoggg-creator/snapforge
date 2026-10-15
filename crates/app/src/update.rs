@@ -55,7 +55,9 @@ fn agent() -> ureq::Agent {
         .build();
     ureq::Agent::config_builder()
         .tls_config(tls)
-        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        // the exe is tens of megabytes: a slow link must not abort the download (it is checked by SHA-256 anyway)
+        .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
+        .timeout_connect(Some(std::time::Duration::from_secs(20)))
         .build()
         .into()
 }
