@@ -68,14 +68,20 @@ impl App {
             "history" => self.view = View::History,
             "post" => {
                 self.settings.post.active = 1;
-                self.begin_post(ctx, demo::demo_image(2, 1100, 640), "demo-browser".into());
+                self.begin_post(
+                    ctx,
+                    crate::capture_flow::Shot::plain(demo::demo_image(2, 1100, 640), "demo-browser".into()),
+                );
             }
             "review" => {
                 // the "Private" preset: real OCR finds the invented address and phone number; the face model is
                 // not installed in the demo's throw-away data folder, which the panel says honestly
                 self.pending = None;
                 self.settings.post.active = 2;
-                self.begin_post(ctx, demo::demo_image(2, 1100, 640), "demo-browser".into());
+                self.begin_post(
+                    ctx,
+                    crate::capture_flow::Shot::plain(demo::demo_image(2, 1100, 640), "demo-browser".into()),
+                );
                 self.post_run(ctx);
             }
             "chart" => {

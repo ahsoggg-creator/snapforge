@@ -353,6 +353,10 @@ impl App {
         area.show(ui, |ui| {
             ui.label(RichText::new(tr(lang, "set.title")).size(20.0).strong());
             ui.add_space(6.0);
+            self.hotkeys_card(ui, &mut changed);
+            ui.add_space(8.0);
+            self.overlay_card(ui, &mut changed);
+            ui.add_space(8.0);
 
             theme::card(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -466,8 +470,6 @@ impl App {
             });
             ui.add_space(8.0);
 
-            self.hotkeys_card(ui, &mut changed);
-            ui.add_space(8.0);
             self.post_card(ui, &mut changed);
             ui.add_space(8.0);
             self.uploads_card(ui, &mut changed);
@@ -534,39 +536,18 @@ impl App {
                     .map(|b| b.combo.to_string())
                     .collect();
             }
-            // recording: the next key combination pressed becomes the binding
+            // recording: the next key combination pressed becomes the binding. The keyboard is polled directly, so any
+            // key works, including PrintScreen and the Win key, which window events never report.
+            let mut auto_apply = false;
             if let Some(i) = self.recording {
-                let pressed = ctx.input(|inp| {
-                    inp.events.iter().find_map(|e| match e {
-                        egui::Event::Key {
-                            key,
-                            pressed: true,
-                            modifiers,
-                            ..
-                        } => Some((*key, *modifiers)),
-                        _ => None,
-                    })
-                });
-                if let Some((key, m)) = pressed {
-                    if key == egui::Key::Escape {
+                ctx.request_repaint();
+                if let Some(c) = snapforge_core::hotkey::poll_pressed_combo() {
+                    if c.vk == 0x1B && c.mods == 0 {
+                        self.recording = None; // Esc cancels
+                    } else if c.validate().is_ok() {
+                        self.hotkey_text[i] = c.to_string();
                         self.recording = None;
-                    } else {
-                        let mut s = String::new();
-                        for (on, n) in [
-                            (m.ctrl, "Ctrl+"),
-                            (m.alt, "Alt+"),
-                            (m.shift, "Shift+"),
-                            (m.mac_cmd || m.command && !m.ctrl, "Win+"),
-                        ] {
-                            if on {
-                                s.push_str(n);
-                            }
-                        }
-                        s.push_str(key.name());
-                        if let Ok(c) = s.parse::<Combo>() {
-                            self.hotkey_text[i] = c.to_string();
-                            self.recording = None;
-                        }
+                        auto_apply = true;
                     }
                 }
             }
@@ -618,7 +599,19 @@ impl App {
                         ui.end_row();
                     }
                 });
-            if ui.button(tr(lang, "set.apply_hotkeys")).clicked() {
+            ui.horizontal(|ui| {
+                if ui.button(tr(lang, "set.reset_hotkeys")).clicked() {
+                    let defaults = snapforge_core::hotkey::Profile::default_profile();
+                    for (i, d) in defaults.bindings.iter().enumerate() {
+                        if let Some(t) = self.hotkey_text.get_mut(i) {
+                            *t = d.combo.to_string();
+                        }
+                    }
+                    auto_apply = true;
+                }
+                ui.label(RichText::new(tr(lang, "set.hotkeys_hint")).weak().small());
+            });
+            if ui.button(tr(lang, "set.apply_hotkeys")).clicked() || auto_apply {
                 let mut p = self.settings.profiles[ai].clone();
                 let mut ok = true;
                 for (i, b) in p.bindings.iter_mut().enumerate() {

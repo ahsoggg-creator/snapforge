@@ -523,3 +523,150 @@ fn s3_fields(ui: &mut Ui, s: &mut S3Dest, lang: snapforge_core::settings::Lang) 
     changed |= ui.checkbox(&mut s.path_style, tr(lang, "up.path_style")).changed();
     changed
 }
+
+fn otool_key(t: snapforge_core::settings::OverlayTool) -> &'static str {
+    use snapforge_core::settings::OverlayTool as T;
+    match t {
+        T::Region => "otool.region",
+        T::Window => "otool.window",
+        T::Screen => "otool.screen",
+        T::Ocr => "otool.ocr",
+        T::Rect => "otool.rect",
+        T::Ellipse => "otool.ellipse",
+        T::Line => "otool.line",
+        T::Arrow => "otool.arrow",
+        T::Pencil => "otool.pencil",
+        T::Marker => "otool.marker",
+        T::Text => "otool.text",
+        T::Step => "otool.step",
+        T::Blur => "otool.blur",
+        T::Pixelate => "otool.pixelate",
+    }
+}
+
+/// Keys the overlay itself uses; tools cannot take them.
+const RESERVED_KEYS: [u32; 7] = [0x1B, 0x0D, 0x08, 0x25, 0x26, 0x27, 0x28];
+
+impl App {
+    /// "Capture overlay": the tool the overlay starts with, privacy and one configurable key per tool.
+    pub fn overlay_card(&mut self, ui: &mut Ui, changed: &mut bool) {
+        use snapforge_core::hotkey::{key_label, parse_single_key, poll_pressed_combo};
+        use snapforge_core::settings::{OverlayTool, default_overlay_keys};
+        let lang = self.settings.language;
+        if self.overlay_key_text.len() != OverlayTool::ALL.len() {
+            self.overlay_key_text = OverlayTool::ALL
+                .iter()
+                .map(|t| {
+                    self.settings
+                        .overlay_keys
+                        .iter()
+                        .find(|(x, _)| x == t)
+                        .map(|(_, k)| k.clone())
+                        .unwrap_or_default()
+                })
+                .collect();
+        }
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(tr(lang, "set.overlay")).strong());
+            ui.label(RichText::new(tr(lang, "set.overlay_help")).weak().small());
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "set.overlay_start"));
+                egui::ComboBox::from_id_salt("overlay_start")
+                    .selected_text(tr(lang, otool_key(self.settings.overlay_start)))
+                    .show_ui(ui, |ui| {
+                        for t in OverlayTool::ALL {
+                            *changed |= ui
+                                .selectable_value(&mut self.settings.overlay_start, t, tr(lang, otool_key(t)))
+                                .changed();
+                        }
+                    });
+            });
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_privacy, tr(lang, "set.overlay_privacy"))
+                .changed();
+            ui.separator();
+            ui.label(tr(lang, "set.overlay_keys"));
+
+            // recording one key: poll the keyboard (modifiers are ignored: tool keys are single keys)
+            let mut recorded: Option<(usize, String)> = None;
+            if let Some(i) = self.recording_overlay {
+                ui.ctx().request_repaint();
+                if let Some(c) = poll_pressed_combo() {
+                    if c.vk == 0x1B {
+                        self.recording_overlay = None;
+                    } else if !RESERVED_KEYS.contains(&c.vk) {
+                        recorded = Some((i, key_label(c.vk)));
+                        self.recording_overlay = None;
+                    }
+                }
+            }
+            if let Some((i, k)) = recorded {
+                self.overlay_key_text[i] = k;
+            }
+            // which tool already uses each key
+            let parsed: Vec<Option<u32>> = self.overlay_key_text.iter().map(|t| parse_single_key(t)).collect();
+            let mut new_keys: Vec<(OverlayTool, String)> = Vec::new();
+            egui::Grid::new("overlay_keys")
+                .num_columns(4)
+                .spacing([10.0, 6.0])
+                .show(ui, |ui| {
+                    for (i, t) in OverlayTool::ALL.iter().enumerate() {
+                        ui.label(tr(lang, otool_key(*t)));
+                        let text = &mut self.overlay_key_text[i];
+                        let empty = text.trim().is_empty();
+                        let vk = parsed[i];
+                        let dup = vk.is_some_and(|v| parsed.iter().enumerate().any(|(j, p)| j != i && *p == Some(v)));
+                        let reserved = vk.is_some_and(|v| RESERVED_KEYS.contains(&v));
+                        let bad = (!empty && vk.is_none()) || dup || reserved;
+                        let color = if bad { theme::BAD } else { ui.visuals().text_color() };
+                        ui.add_sized([80.0, 22.0], egui::TextEdit::singleline(text).text_color(color));
+                        let rec = self.recording_overlay == Some(i);
+                        if ui
+                            .button(if rec {
+                                tr(lang, "set.recording")
+                            } else {
+                                tr(lang, "set.record")
+                            })
+                            .clicked()
+                        {
+                            self.recording_overlay = if rec { None } else { Some(i) };
+                        }
+                        if bad {
+                            ui.colored_label(
+                                theme::WARN,
+                                tr(
+                                    lang,
+                                    if dup {
+                                        "set.key_taken"
+                                    } else if reserved {
+                                        "set.key_reserved"
+                                    } else {
+                                        "set.key_unknown"
+                                    },
+                                ),
+                            );
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                        // only valid, unique keys reach the settings; an empty field means "no key"
+                        if !bad {
+                            new_keys.push((*t, vk.map(key_label).unwrap_or_default()));
+                        } else if let Some((_, old)) = self.settings.overlay_keys.iter().find(|(x, _)| x == t) {
+                            new_keys.push((*t, old.clone()));
+                        }
+                    }
+                });
+            if new_keys != self.settings.overlay_keys {
+                self.settings.overlay_keys = new_keys;
+                *changed = true;
+            }
+            if ui.button(tr(lang, "set.reset_hotkeys")).clicked() {
+                self.settings.overlay_keys = default_overlay_keys();
+                self.overlay_key_text.clear();
+                *changed = true;
+            }
+        });
+    }
+}

@@ -152,6 +152,14 @@ impl EditorState {
         }
     }
 
+    /// Adds layers (drawn elsewhere, e.g. in the capture overlay) on top of the picture.
+    pub fn add_objects(&mut self, objects: Vec<snapforge_core::editor::Object>) {
+        for o in objects {
+            self.ed.doc.add(o.shape, o.color, o.width);
+        }
+        self.dirty = true;
+    }
+
     pub fn modified(&self) -> bool {
         self.ed.can_undo()
     }

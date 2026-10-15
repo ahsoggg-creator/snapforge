@@ -19,6 +19,80 @@ pub enum Lang {
     En,
 }
 
+/// Tools of the capture overlay (the bar at the top of the screen while you pick an area).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayTool {
+    Region,
+    Window,
+    Screen,
+    /// Select an area and copy the text recognised in it (SnapForge's own tool).
+    Ocr,
+    Rect,
+    Ellipse,
+    Line,
+    Arrow,
+    Pencil,
+    Marker,
+    Text,
+    Step,
+    Blur,
+    Pixelate,
+}
+
+impl OverlayTool {
+    pub const ALL: [OverlayTool; 14] = [
+        OverlayTool::Region,
+        OverlayTool::Window,
+        OverlayTool::Screen,
+        OverlayTool::Ocr,
+        OverlayTool::Rect,
+        OverlayTool::Ellipse,
+        OverlayTool::Line,
+        OverlayTool::Arrow,
+        OverlayTool::Pencil,
+        OverlayTool::Marker,
+        OverlayTool::Text,
+        OverlayTool::Step,
+        OverlayTool::Blur,
+        OverlayTool::Pixelate,
+    ];
+
+    pub fn default_key(self) -> &'static str {
+        match self {
+            OverlayTool::Region => "S",
+            OverlayTool::Window => "W",
+            OverlayTool::Screen => "F",
+            OverlayTool::Ocr => "O",
+            OverlayTool::Rect => "R",
+            OverlayTool::Ellipse => "E",
+            OverlayTool::Line => "L",
+            OverlayTool::Arrow => "A",
+            OverlayTool::Pencil => "P",
+            OverlayTool::Marker => "M",
+            OverlayTool::Text => "T",
+            OverlayTool::Step => "N",
+            OverlayTool::Blur => "B",
+            OverlayTool::Pixelate => "X",
+        }
+    }
+
+    /// Tools that choose *what to capture* (the others draw on the screen first).
+    pub fn is_capture(self) -> bool {
+        matches!(
+            self,
+            OverlayTool::Region | OverlayTool::Window | OverlayTool::Screen | OverlayTool::Ocr
+        )
+    }
+}
+
+pub fn default_overlay_keys() -> Vec<(OverlayTool, String)> {
+    OverlayTool::ALL
+        .iter()
+        .map(|t| (*t, t.default_key().to_owned()))
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageFormat {
@@ -58,6 +132,14 @@ pub struct Settings {
     pub active_profile: usize,
     pub post: PostSettings,
     pub uploads: UploadSettings,
+    /// Single-key shortcuts of the capture overlay's tools (empty = none).
+    pub overlay_keys: Vec<(OverlayTool, String)>,
+    /// The tool the overlay starts with.
+    pub overlay_start: OverlayTool,
+    pub overlay_color: [u8; 4],
+    pub overlay_width: f32,
+    /// Start every capture with "hide sensitive text" switched on in the overlay.
+    pub overlay_privacy: bool,
 }
 
 impl Default for Settings {
@@ -81,6 +163,11 @@ impl Default for Settings {
             active_profile: 0,
             post: PostSettings::default(),
             uploads: UploadSettings::default(),
+            overlay_keys: default_overlay_keys(),
+            overlay_start: OverlayTool::Region,
+            overlay_color: [230, 40, 40, 255],
+            overlay_width: 4.0,
+            overlay_privacy: false,
         }
     }
 }
@@ -116,6 +203,27 @@ impl Settings {
         self.jpeg_quality = self.jpeg_quality.clamp(1, 100);
         self.delay_ms = self.delay_ms.min(60_000);
         self.post.sanitize();
+        self.overlay_width = self.overlay_width.clamp(1.0, 24.0);
+        // every tool has an entry; unknown key names fall back to the default and duplicates are dropped
+        let mut keys: Vec<(OverlayTool, String)> = Vec::new();
+        for t in OverlayTool::ALL {
+            let wanted = self
+                .overlay_keys
+                .iter()
+                .find(|(x, _)| *x == t)
+                .map(|(_, k)| k.trim().to_owned());
+            let key = match wanted {
+                Some(k) if k.is_empty() => String::new(),
+                Some(k) if crate::hotkey::parse_single_key(&k).is_some() => k,
+                _ => t.default_key().to_owned(),
+            };
+            let taken = !key.is_empty()
+                && keys
+                    .iter()
+                    .any(|(_, k)| crate::hotkey::parse_single_key(k) == crate::hotkey::parse_single_key(&key));
+            keys.push((t, if taken { String::new() } else { key }));
+        }
+        self.overlay_keys = keys;
         if self.name_template.trim().is_empty() {
             self.name_template = naming::DEFAULT_TEMPLATE.to_owned();
         }
@@ -198,6 +306,33 @@ mod tests {
         let s = Settings::default();
         assert!(!s.uploads.enabled && s.uploads.destinations.is_empty());
         assert!(s.post.presets.iter().all(|p| !p.upload));
+    }
+
+    #[test]
+    fn overlay_keys_are_completed_validated_and_deduplicated() {
+        let mut s = Settings::default();
+        assert_eq!(s.overlay_keys.len(), OverlayTool::ALL.len());
+        s.overlay_keys = vec![
+            (OverlayTool::Rect, "q".into()),
+            (OverlayTool::Arrow, "Q".into()),        // same key as Rect: dropped
+            (OverlayTool::Text, "NoSuchKey".into()), // unknown: default
+            (OverlayTool::Blur, String::new()),      // deliberately unbound
+        ];
+        s.sanitize();
+        let key = |t| s.overlay_keys.iter().find(|(x, _)| *x == t).unwrap().1.clone();
+        assert_eq!(key(OverlayTool::Rect), "q");
+        assert_eq!(key(OverlayTool::Arrow), "");
+        assert_eq!(key(OverlayTool::Text), "T");
+        assert_eq!(key(OverlayTool::Blur), "");
+        assert_eq!(key(OverlayTool::Region), "S", "missing tools get their default");
+        assert_eq!(s.overlay_keys.len(), OverlayTool::ALL.len());
+    }
+
+    #[test]
+    fn old_settings_files_without_overlay_fields_still_load() {
+        let s: Settings = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert_eq!(s.overlay_start, OverlayTool::Region);
+        assert_eq!(s.overlay_keys.len(), OverlayTool::ALL.len());
     }
 
     #[test]

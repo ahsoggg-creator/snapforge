@@ -4341,7 +4341,7 @@ dependencies = [
 
 [[package]]
 name = "snapforge-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "eframe",
@@ -4359,7 +4359,7 @@ dependencies = [
 
 [[package]]
 name = "snapforge-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "clap",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "snapforge-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ab_glyph",
  "arboard",
