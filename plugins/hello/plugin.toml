@@ -1,0 +1,9 @@
+name = "Hello"
+version = "1.0.0"
+author = "SnapForge"
+description = "The smallest useful plugin: logs the size of every capture and adds a menu item"
+main = "main.rhai"
+
+[permissions]
+# notify() needs the "ui" permission
+ui = true

@@ -15,6 +15,7 @@ pub mod net;
 pub mod ocr;
 pub mod output;
 pub mod paths;
+pub mod plugin;
 pub mod post;
 pub mod secrets;
 pub mod sensitive;
