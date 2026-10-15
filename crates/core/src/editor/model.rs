@@ -27,16 +27,55 @@ impl Pt {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
-    Line { a: Pt, b: Pt },
-    Arrow { a: Pt, b: Pt },
-    Rect { a: Pt, b: Pt, fill: bool },
-    Ellipse { a: Pt, b: Pt, fill: bool },
-    Text { at: Pt, text: String, size: f32 },
-    Pencil { pts: Vec<Pt> },
-    Marker { pts: Vec<Pt> },
-    Blur { a: Pt, b: Pt, radius: u32 },
-    Pixelate { a: Pt, b: Pt, block: u32 },
-    Step { at: Pt, n: u32 },
+    Line {
+        a: Pt,
+        b: Pt,
+    },
+    Arrow {
+        a: Pt,
+        b: Pt,
+    },
+    Rect {
+        a: Pt,
+        b: Pt,
+        fill: bool,
+    },
+    Ellipse {
+        a: Pt,
+        b: Pt,
+        fill: bool,
+    },
+    Text {
+        at: Pt,
+        text: String,
+        size: f32,
+    },
+    Pencil {
+        pts: Vec<Pt>,
+    },
+    Marker {
+        pts: Vec<Pt>,
+    },
+    Blur {
+        a: Pt,
+        b: Pt,
+        radius: u32,
+    },
+    Pixelate {
+        a: Pt,
+        b: Pt,
+        block: u32,
+    },
+    Step {
+        at: Pt,
+        n: u32,
+    },
+    /// A chart drawn from a data table; `color` of the object is the text colour (alpha 0 = default).
+    Chart {
+        a: Pt,
+        b: Pt,
+        spec: super::chart::ChartSpec,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,6 +126,7 @@ impl Shape {
             Shape::Blur { .. } => "blur",
             Shape::Pixelate { .. } => "pixelate",
             Shape::Step { .. } => "step",
+            Shape::Chart { .. } => "chart",
         }
     }
 
@@ -97,6 +137,7 @@ impl Shape {
             | Shape::Rect { a, b, .. }
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
+            | Shape::Chart { a, b, .. }
             | Shape::Pixelate { a, b, .. } => vec![a, b],
             Shape::Text { at, .. } | Shape::Step { at, .. } => vec![at],
             Shape::Pencil { pts } | Shape::Marker { pts } => pts.iter_mut().collect(),
@@ -124,6 +165,7 @@ impl Shape {
             Shape::Rect { a, b, .. }
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
+            | Shape::Chart { a, b, .. }
             | Shape::Pixelate { a, b, .. } => norm_rect(*a, *b),
             Shape::Text { at, text, size } => {
                 let (w, h) = render::measure_text(text, *size);
@@ -192,7 +234,11 @@ impl Shape {
                     _ => pts.windows(2).any(|w| dist_to_segment(p, w[0], w[1]) <= reach),
                 }
             }
-            Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Text { .. } | Shape::Step { .. } => {
+            Shape::Blur { .. }
+            | Shape::Pixelate { .. }
+            | Shape::Chart { .. }
+            | Shape::Text { .. }
+            | Shape::Step { .. } => {
                 let (lo, hi) = self.bounds(0.0);
                 p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y || {
                     matches!(self, Shape::Step { .. }) && {
@@ -211,6 +257,7 @@ impl Shape {
             Shape::Rect { a, b, .. }
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
+            | Shape::Chart { a, b, .. }
             | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 vec![lo, Pt::new(hi.x, lo.y), hi, Pt::new(lo.x, hi.y)]
@@ -232,6 +279,7 @@ impl Shape {
             Shape::Rect { a, b, .. }
             | Shape::Ellipse { a, b, .. }
             | Shape::Blur { a, b, .. }
+            | Shape::Chart { a, b, .. }
             | Shape::Pixelate { a, b, .. } => {
                 let (lo, hi) = norm_rect(*a, *b);
                 // the opposite corner stays fixed

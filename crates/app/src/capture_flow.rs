@@ -9,7 +9,7 @@ use snapforge_core::geometry::virtual_bounds;
 use snapforge_core::hotkey::HotAction;
 
 use crate::selector::{self, Mode as SelMode};
-use crate::{App, View, demo, editor_ui::EditorState, unix_now};
+use crate::{App, View, demo, editor_ui::EditorState};
 
 pub struct Shot {
     pub image: RgbaImage,
@@ -157,19 +157,8 @@ impl App {
         self.capturing = false;
         match msg {
             CapMsg::Done(shot) => {
-                let id = if self.settings.history_enabled {
-                    match self.history.add(&shot.image, &shot.app, unix_now()) {
-                        Ok(e) => Some(e.id),
-                        Err(e) => {
-                            diag::log(diag::Level::Warn, &format!("history add failed: {e}"));
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                self.open_editor(ctx, shot.image, shot.app, id);
-                self.show_window(ctx);
+                // the history gets the picture only after the chain ran, so redactions are never bypassed
+                self.begin_post(ctx, shot.image, shot.app);
             }
             CapMsg::Cancelled => {
                 self.show_window(ctx);

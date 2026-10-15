@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::hotkey::Profile;
 use crate::naming;
 use crate::paths;
+use crate::post::PostSettings;
+use crate::upload::UploadSettings;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,6 +56,8 @@ pub struct Settings {
     pub hotkeys_enabled: bool,
     pub profiles: Vec<Profile>,
     pub active_profile: usize,
+    pub post: PostSettings,
+    pub uploads: UploadSettings,
 }
 
 impl Default for Settings {
@@ -75,6 +79,8 @@ impl Default for Settings {
             hotkeys_enabled: true,
             profiles: vec![Profile::default_profile()],
             active_profile: 0,
+            post: PostSettings::default(),
+            uploads: UploadSettings::default(),
         }
     }
 }
@@ -109,6 +115,7 @@ impl Settings {
         self.active_profile = self.active_profile.min(self.profiles.len() - 1);
         self.jpeg_quality = self.jpeg_quality.clamp(1, 100);
         self.delay_ms = self.delay_ms.min(60_000);
+        self.post.sanitize();
         if self.name_template.trim().is_empty() {
             self.name_template = naming::DEFAULT_TEMPLATE.to_owned();
         }
@@ -184,6 +191,13 @@ mod tests {
         assert_eq!(s.active_profile, 0);
         assert_eq!(s.jpeg_quality, 1);
         assert_eq!(s.name_template, naming::DEFAULT_TEMPLATE);
+    }
+
+    #[test]
+    fn uploads_are_off_in_a_fresh_config() {
+        let s = Settings::default();
+        assert!(!s.uploads.enabled && s.uploads.destinations.is_empty());
+        assert!(s.post.presets.iter().all(|p| !p.upload));
     }
 
     #[test]

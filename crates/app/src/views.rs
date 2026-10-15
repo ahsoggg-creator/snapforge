@@ -35,6 +35,9 @@ impl App {
                 if self.editor.is_some() {
                     tabs.insert(1, (View::Editor, "nav.editor"));
                 }
+                if self.pending.is_some() {
+                    tabs.insert(1, (View::PostCapture, "nav.post"));
+                }
                 for (v, key) in tabs {
                     if ui
                         .add(egui::Button::selectable(self.view == v, tr(lang, key)))
@@ -55,6 +58,7 @@ impl App {
                     .inner
             }
             View::Editor => self.editor_view(ui),
+            View::PostCapture => egui::CentralPanel::default().show(ui, |ui| self.post_view(ui)).inner,
         }
         self.toast_ui(ui.ctx());
     }
@@ -340,7 +344,11 @@ impl App {
         let lang = self.settings.language;
         let ctx = ui.ctx().clone();
         let mut changed = false;
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        let mut area = egui::ScrollArea::vertical();
+        if let Some(y) = self.settings_scroll.take() {
+            area = area.vertical_scroll_offset(y);
+        }
+        area.show(ui, |ui| {
             ui.label(RichText::new(tr(lang, "set.title")).size(20.0).strong());
             ui.add_space(6.0);
 
@@ -358,6 +366,7 @@ impl App {
                         });
                     if before != self.settings.language {
                         changed = true;
+                        self.localize_preset_names();
                         if !self.flags.demo {
                             self.tray = crate::tray::Tray::new(&ctx, self.settings.language).or(self.tray.take());
                         }
@@ -457,10 +466,15 @@ impl App {
 
             self.hotkeys_card(ui, &mut changed);
             ui.add_space(8.0);
+            self.post_card(ui, &mut changed);
+            ui.add_space(8.0);
+            self.uploads_card(ui, &mut changed);
+            ui.add_space(8.0);
             self.updates_card(ui, &mut changed);
             ui.add_space(8.0);
             self.system_card(ui);
         });
+        self.uploads_confirm(&ctx, &mut changed);
         if changed {
             self.save_settings();
         }

@@ -5,21 +5,21 @@
 A safer ShareX alternative for Windows: screen capture, an editor with vector annotations, a screenshot history and
 global hotkeys. Everything stays on your computer; the only thing the app contacts is GitHub, to check for updates.
 
-![Editor: blur, pixelate, arrow, numbered markers](docs/screenshots/03-editor.png)
+![The after-capture panel: an address and a phone number found before hiding](docs/screenshots/04-review.png)
 
 *All screenshots were made on invented data (`SnapForge.exe --demo`) — no real windows, names or people are shown.*
 
 ## How it differs from ShareX
 
 - **Safety.** No native DLL plugins and no arbitrary code. (Version 0.3.0 will add plugins as Rhai scripts in a
-  sandbox with explicit permissions; 0.1.0 has no plugins.)
-- **Local by default.** No uploads, no telemetry, no cloud. The only network request is the update check, once a day
-  (it can be turned off).
+  sandbox with explicit permissions; 0.2.0 has no plugins yet.)
+- **Local by default.** Uploads are off until you switch them on and configure them; no telemetry, no cloud. The only
+  network request by default is the update check, once a day (it can be turned off).
 - **Objects stay vector.** Arrows, frames, text, markers and blur can be moved, changed and deleted until you save
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.1.0)
+## Features (0.2.0)
 
 - **Capture:** region (frozen frame, magnifier next to the cursor, pixel-exact selection, arrow keys nudge the
   cursor by 1 px, Shift: 10), window, full screen, a single monitor. Multiple monitors with different scaling: all
@@ -35,15 +35,36 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   dragging the image out of the window into Explorer, a chat, etc.
 - **History:** thumbnail grid, search by application, date and size, delete, open in the editor. A retention period
   and a "clear history" button.
+- **After capture (0.2.0).** A panel with checkboxes that you can adjust at the moment of capture; presets are
+  saved. Available actions: save, copy to the clipboard, open in the editor, upload, blur faces, recognise text and
+  copy it, hide sensitive text (e-mail addresses, phone numbers, keys and tokens found by OCR), trim empty margins, add a
+  watermark (text or PNG), reduce the size. Every action can be turned off; by default only "open in the editor" is on
+  and uploading is unavailable until it is enabled in the settings.
+- **Review before applying.** Found faces and text fragments are framed on the shot, and any area can be unticked
+  before it is covered.
+- **Faces and OCR work offline only.** OCR uses `Windows.Media.Ocr` with the languages installed in Windows; face
+  detection is a small ONNX model run on this computer (`tract`). The model is **not bundled**: you download it with
+  a button (about 1.2 MB), its SHA-256 is verified, and without it the feature honestly says "model not installed".
+- **Charts (0.2.0).** A "Chart" tool: bar, line and pie charts from a table typed in or pasted from the clipboard
+  (CSV/TSV, decimal comma or dot). A chart is a normal editable object: move it, resize it, change colours, labels and
+  data.
+- **Uploads (0.2.0, off by default).** A custom HTTP uploader (URL, method, headers, file field, JSON path of the link in
+  the response), a Discord webhook, a Telegram bot, S3-compatible storage (AWS SigV4 signing). Tokens and keys are
+  stored **only in the Windows Credential Manager**, never in the settings files, and are stripped from the log and
+  crash reports. The link is copied to the clipboard after an upload.
 - **UI language:** Russian by default, English in the settings.
 - **`snapforge-cli`:** `capture --region X,Y,W,H | --screen | --monitor N | --window`, `monitors`,
   `history list|clear`.
+
+| After capture | Charts in the editor |
+| --- | --- |
+| ![After capture](docs/screenshots/03-post.png) | ![Charts](docs/screenshots/06-chart.png) |
 
 | Home | History |
 | --- | --- |
 | ![Home](docs/screenshots/01-home.png) | ![History](docs/screenshots/02-history.png) |
 
-![Settings](docs/screenshots/04-settings.png)
+![Settings: uploads and after capture](docs/screenshots/09-settings-uploads.png)
 
 ## Installation
 
@@ -76,7 +97,9 @@ git-ignored. A self-signed certificate does not remove the SmartScreen warning u
 
 - Screenshots are personal data: the history lives only in `%APPDATA%\SnapForge\history`. The retention period
   (30 days by default) and "clear history" are in the settings.
-- The only network request is the new-version check (`api.github.com`); it can be disabled. There is no telemetry.
+- The only network request by default is the new-version check (`api.github.com`); it can be disabled. Uploading is
+  off until you enable it and enable a specific destination; the face model is downloaded only when you press the
+  button. There is no telemetry.
 - Log: `%APPDATA%\SnapForge\logs\snapforge.log` (rotates at 512 KB). Crash reports:
   `logs\crashes\crash-<time>.txt` (version, panic location, stack, log tail). Screenshot content never goes into the
   log or the reports; tokens and keys that might appear in text are stripped.

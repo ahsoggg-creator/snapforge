@@ -13,7 +13,9 @@ mod dragout;
 mod editor_ui;
 mod i18n;
 mod installer;
+mod post_ui;
 mod selector;
+mod settings_extra;
 mod theme;
 mod tray;
 mod update;
@@ -31,6 +33,7 @@ use snapforge_core::capture::sys;
 use snapforge_core::geometry::Monitor;
 use snapforge_core::history::History;
 use snapforge_core::hotkey::{HotAction, HotkeyManager, Registered};
+use snapforge_core::secrets::{CredentialManager, MemoryStore, SecretStore};
 use snapforge_core::settings::{Lang, Settings};
 use snapforge_core::{diag as core_diag, paths};
 
@@ -48,6 +51,7 @@ pub enum View {
     Home,
     History,
     Editor,
+    PostCapture,
     Settings,
 }
 
@@ -71,6 +75,16 @@ pub struct App {
     pub history: History,
     pub thumbs: HashMap<String, TextureHandle>,
     pub editor: Option<EditorState>,
+    pub pending: Option<post_ui::Pending>,
+    pub ocr_state: Option<editor_ui::OcrState>,
+    pub model_dl: Option<settings_extra::ModelDownload>,
+    pub confirm_uploads: bool,
+    /// Credential Manager normally; an in-memory store in the demo so nothing real is touched.
+    pub secrets: Arc<dyn SecretStore>,
+    pub secret_state: HashMap<String, bool>,
+    pub secret_input: HashMap<String, String>,
+    pub toast_tx: Sender<(String, bool)>,
+    pub toast_rx: Receiver<(String, bool)>,
     pub toast: Option<Toast>,
     pub icon: Option<TextureHandle>,
     pub cap_tx: Sender<CapMsg>,
@@ -92,6 +106,8 @@ pub struct App {
     pub tour: Option<demo_tour::Tour>,
     pub demo_counter: usize,
     pub quit: bool,
+    /// One-shot scroll position for the settings page (used by the screenshot tour).
+    pub settings_scroll: Option<f32>,
     /// Frames left before the window hides itself to the tray (start with `--minimized`).
     pub hide_after_frames: Option<u8>,
     pub desktop_shortcut: bool,
@@ -114,6 +130,7 @@ impl App {
         let history = History::open(&paths::history_dir());
         let (cap_tx, cap_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
+        let (toast_tx, toast_rx) = channel();
         let is_app = matches!(mode, Mode::App);
         let hotkeys = (is_app && !demo).then(|| {
             let ctx = cc.egui_ctx.clone();
@@ -131,6 +148,19 @@ impl App {
             history,
             thumbs: HashMap::new(),
             editor: None,
+            pending: None,
+            ocr_state: None,
+            model_dl: None,
+            confirm_uploads: false,
+            secrets: if demo {
+                Arc::new(MemoryStore::default())
+            } else {
+                Arc::new(CredentialManager)
+            },
+            secret_state: HashMap::new(),
+            secret_input: HashMap::new(),
+            toast_tx,
+            toast_rx,
             toast: None,
             icon,
             cap_tx,
@@ -151,10 +181,12 @@ impl App {
             recording: None,
             demo_counter: 0,
             quit: false,
+            settings_scroll: None,
             hide_after_frames: None,
             desktop_shortcut: true,
             flags,
         };
+        app.localize_preset_names();
         if is_app && !demo {
             app.apply_hotkeys();
             app.tray = tray::Tray::new(&cc.egui_ctx, app.settings.language);
@@ -178,6 +210,25 @@ impl App {
             &format!("started, mode={}", if demo { "demo" } else { "normal" }),
         );
         app
+    }
+
+    /// The built-in presets are named in the interface language; presets renamed by the user are left alone.
+    pub fn localize_preset_names(&mut self) {
+        const NAMES: [(&str, &str); 3] = [
+            ("Editor", "Редактор"),
+            ("Save + clipboard", "Сохранить и в буфер"),
+            ("Private", "Приватный"),
+        ];
+        let ru = self.settings.language == Lang::Ru;
+        for p in &mut self.settings.post.presets {
+            for (en, rus) in NAMES {
+                if ru && p.name == en {
+                    p.name = rus.to_owned();
+                } else if !ru && p.name == rus {
+                    p.name = en.to_owned();
+                }
+            }
+        }
     }
 
     pub fn t(&self, key: &'static str) -> &'static str {
@@ -284,6 +335,10 @@ impl App {
         }
         while let Ok(m) = self.cap_rx.try_recv() {
             self.on_capture_msg(ctx, m);
+        }
+        self.post_poll(ctx);
+        while let Ok((text, error)) = self.toast_rx.try_recv() {
+            self.notify(text, error);
         }
         for ev in tray::poll() {
             match ev {
