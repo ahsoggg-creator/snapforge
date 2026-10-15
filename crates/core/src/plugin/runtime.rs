@@ -866,6 +866,30 @@ impl Plugin {
         out
     }
 
+    /// Calls `name` with the arguments its kind expects: hooks and actions get the picture, `on_before_save` also
+    /// an info map, `tool_*` also the click position, `menu_*` and `on_after_save` take no picture.
+    /// Used by the test run in the editor and by `snapforge-cli plugin run`.
+    pub fn call_named(&self, name: &str, img: &RgbaImage, at: (i64, i64)) -> RunOutcome {
+        let mut info = Map::new();
+        info.insert("app".into(), Dynamic::from("test".to_owned()));
+        info.insert("format".into(), Dynamic::from("png".to_owned()));
+        info.insert("width".into(), Dynamic::from(img.width() as i64));
+        info.insert("height".into(), Dynamic::from(img.height() as i64));
+        if name.starts_with("menu_") {
+            self.call_plain(name, Vec::new())
+        } else if name == "on_after_save" {
+            let path = "C:\\test\\shot.png".to_owned();
+            info.insert("path".into(), Dynamic::from(path.clone()));
+            self.call_plain(name, vec![Dynamic::from(path), Dynamic::from(info)])
+        } else if name == "on_before_save" {
+            self.call_image(name, Some(img), vec![Dynamic::from(info)])
+        } else if name.starts_with("tool_") {
+            self.call_image(name, Some(img), vec![Dynamic::from(at.0), Dynamic::from(at.1)])
+        } else {
+            self.call_image(name, Some(img), Vec::new())
+        }
+    }
+
     /// Calls a function that takes only plain arguments (menu items, `on_after_save`).
     pub fn call_plain(&self, name: &str, args: Vec<Dynamic>) -> RunOutcome {
         self.call_image(name, None, args)

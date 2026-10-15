@@ -2,13 +2,18 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use snapforge_core::capture::{self, CaptureOptions, Target, sys};
 use snapforge_core::geometry::Rect;
 use snapforge_core::history::{self, History};
+use snapforge_core::plugin::host::{DryEnv, HostEvent, SystemEnv};
+use snapforge_core::plugin::manifest::Manifest;
+use snapforge_core::plugin::runtime::{Env, Limits, Plugin};
+use snapforge_core::plugin::store::Store;
 use snapforge_core::settings::Settings;
-use snapforge_core::{naming, output, paths};
+use snapforge_core::{naming, ocr, output, paths};
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +32,13 @@ enum Cmd {
     Capture(CaptureArgs),
     /// List monitors with their pixel rectangles and DPI.
     Monitors,
+    /// Recognise the text in an image file (offline, Windows OCR).
+    Ocr(OcrArgs),
+    /// List and run plugins.
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
     /// Work with the local screenshot history.
     History {
         #[command(subcommand)]
@@ -64,6 +76,53 @@ struct CaptureArgs {
     /// Also add the screenshot to the history.
     #[arg(long)]
     history: bool,
+}
+
+#[derive(Args)]
+struct OcrArgs {
+    /// PNG / JPEG / BMP file.
+    file: PathBuf,
+    /// OCR language tag (see `--languages`); default: your Windows languages.
+    #[arg(long)]
+    lang: Option<String>,
+    /// List the OCR languages installed in Windows and exit.
+    #[arg(long)]
+    languages: bool,
+    /// Also print every word with its rectangle (x,y,w,h).
+    #[arg(long)]
+    words: bool,
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins with their permissions.
+    List,
+    /// Run a plugin function on an image file.
+    Run(PluginRunArgs),
+}
+
+#[derive(Args)]
+struct PluginRunArgs {
+    /// An installed plugin id (see `plugin list`) or a path to a plugin folder.
+    plugin: String,
+    /// Image to process.
+    #[arg(long, short)]
+    image: PathBuf,
+    /// Function to call: on_capture, on_before_save, action_<id>, tool_<id>, menu_<id>, on_after_save.
+    #[arg(long, default_value = "on_capture")]
+    hook: String,
+    /// Where to save the resulting image (if the plugin returns one).
+    #[arg(long, short)]
+    out: Option<PathBuf>,
+    /// Click position for `tool_*` functions: X,Y.
+    #[arg(long, value_name = "X,Y", default_value = "0,0")]
+    at: String,
+    /// Run a plugin folder with the permissions its plugin.toml declares. Without it a folder runs with none.
+    #[arg(long)]
+    grant: bool,
+    /// Do not send network requests or touch the clipboard.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Subcommand)]
@@ -162,6 +221,11 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("{} ({w}x{h}, {:?})", path.display(), shot.backend);
             Ok(())
         }
+        Cmd::Ocr(a) => run_ocr(a),
+        Cmd::Plugin { cmd } => match cmd {
+            PluginCmd::List => plugin_list(),
+            PluginCmd::Run(a) => plugin_run(a),
+        },
         Cmd::History { cmd } => {
             let mut h = History::open(&paths::history_dir());
             match cmd {
@@ -182,6 +246,146 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn run_ocr(a: OcrArgs) -> Result<(), String> {
+    if a.languages {
+        for l in ocr::available_languages() {
+            println!("{l}");
+        }
+        return Ok(());
+    }
+    let img = snapforge_core::image::open(&a.file)
+        .map_err(|e| format!("{}: {e}", a.file.display()))?
+        .to_rgba8();
+    let data = ocr::recognize(&img, a.lang.as_deref()).map_err(|e| e.to_string())?;
+    println!("{}", data.text);
+    if a.words {
+        for w in data.lines.iter().flat_map(|l| &l.words) {
+            println!("{},{},{},{}\t{}", w.rect.x, w.rect.y, w.rect.w, w.rect.h, w.text);
+        }
+    }
+    Ok(())
+}
+
+fn plugin_list() -> Result<(), String> {
+    let store = Store::new(paths::plugins_dir());
+    let list = store.list();
+    if list.is_empty() {
+        println!("no plugins installed ({})", store.root().display());
+    }
+    for p in list {
+        let state = match (p.enabled, p.approved) {
+            (true, true) => "enabled",
+            (_, false) => "needs approval",
+            (false, true) => "disabled",
+        };
+        println!("{}  {} {}  [{state}]", p.id, p.manifest.name, p.manifest.version);
+        let perms = &p.perms;
+        let mut asks = Vec::new();
+        if perms.clipboard {
+            asks.push("clipboard".to_owned());
+        }
+        if perms.ui {
+            asks.push("ui".to_owned());
+        }
+        for d in &perms.fs_read {
+            asks.push(format!("fs.read:{}", d.display()));
+        }
+        for d in &perms.fs_write {
+            asks.push(format!("fs.write:{}", d.display()));
+        }
+        for h in &perms.net {
+            asks.push(format!("net:{h}"));
+        }
+        println!(
+            "    permissions: {}",
+            if asks.is_empty() {
+                "none".to_owned()
+            } else {
+                asks.join(", ")
+            }
+        );
+    }
+    Ok(())
+}
+
+fn plugin_run(a: PluginRunArgs) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let env: Arc<dyn Env> = if a.dry_run {
+        Arc::new(DryEnv { events: tx })
+    } else {
+        Arc::new(SystemEnv { events: tx })
+    };
+    let as_dir = PathBuf::from(&a.plugin);
+    let (dir, perms) = if as_dir.join("plugin.toml").is_file() {
+        let m = Manifest::parse(&std::fs::read_to_string(as_dir.join("plugin.toml")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let perms = if a.grant {
+            m.permissions.resolve().map_err(|e| e.to_string())?
+        } else {
+            Default::default()
+        };
+        if !a.grant && !perms_is_empty(&m) {
+            eprintln!(
+                "note: the plugin asks for permissions; running WITHOUT them (use --grant to allow what plugin.toml declares)"
+            );
+        }
+        (as_dir, perms)
+    } else {
+        let p = Store::new(paths::plugins_dir())
+            .get(&a.plugin)
+            .ok_or_else(|| format!("no installed plugin '{}' and no such folder", a.plugin))?;
+        if !p.runnable() {
+            return Err(format!(
+                "'{}' is {}; enable and approve it in the app first",
+                p.id,
+                if p.approved { "disabled" } else { "not approved" }
+            ));
+        }
+        (p.dir.clone(), p.perms.clone())
+    };
+    let plugin = Plugin::load(&dir, perms, env, Limits::default()).map_err(|e| e.to_string())?;
+    let img = snapforge_core::image::open(&a.image)
+        .map_err(|e| format!("{}: {e}", a.image.display()))?
+        .to_rgba8();
+    let (x, y) =
+        a.at.split_once(',')
+            .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)))
+            .ok_or("--at must be X,Y")?;
+    if !plugin.has_fn(&a.hook) {
+        return Err(format!(
+            "the plugin has no function '{}' (it defines: {})",
+            a.hook,
+            plugin.functions().join(", ")
+        ));
+    }
+    let out = plugin.call_named(&a.hook, &img, (x, y));
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            HostEvent::Notify(t) => println!("[notify] {t}"),
+            HostEvent::ShowText { title, text } => println!("[{title}] {text}"),
+        }
+    }
+    for l in &out.console {
+        println!("{}", l.text);
+    }
+    if let Some(e) = out.error {
+        return Err(e.to_string());
+    }
+    match (&out.image, &a.out) {
+        (Some(r), Some(path)) => {
+            output::save_as(r, path, 90).map_err(|e| e.to_string())?;
+            println!("saved {} ({}x{})", path.display(), r.width(), r.height());
+        }
+        (Some(_), None) => println!("the plugin returned a picture (use --out FILE to save it)"),
+        (None, _) => println!("the plugin did not change the picture"),
+    }
+    Ok(())
+}
+
+fn perms_is_empty(m: &Manifest) -> bool {
+    m.permissions.resolve().map(|p| p.is_empty()).unwrap_or(false)
 }
 
 fn main() -> ExitCode {

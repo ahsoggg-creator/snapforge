@@ -69,6 +69,50 @@ impl Env for SystemEnv {
     }
 }
 
+/// Test-run environment: nothing leaves the computer and the clipboard is untouched; notifications still show.
+pub struct DryEnv {
+    pub events: Sender<HostEvent>,
+}
+
+impl Env for DryEnv {
+    fn http(&self, r: &HttpRequest) -> Result<HttpResponse, String> {
+        Err(format!(
+            "dry run: the {} request to {} was not sent",
+            r.method,
+            r.url.split('?').next().unwrap_or("")
+        ))
+    }
+
+    fn clipboard_text(&self) -> Result<String, String> {
+        Ok(String::new())
+    }
+
+    fn set_clipboard_text(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_clipboard_image(&self, _: &RgbaImage) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn ocr(&self, img: &RgbaImage) -> Result<String, String> {
+        crate::ocr::recognize(img, None)
+            .map(|d| d.text)
+            .map_err(|e| e.to_string())
+    }
+
+    fn notify(&self, text: &str) {
+        let _ = self.events.send(HostEvent::Notify(text.to_owned()));
+    }
+
+    fn show_text(&self, title: &str, text: &str) {
+        let _ = self.events.send(HostEvent::ShowText {
+            title: title.to_owned(),
+            text: text.to_owned(),
+        });
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PluginReport {
     pub plugin: String,

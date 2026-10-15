@@ -24,3 +24,4 @@ pub mod upload;
 
 pub use image;
 pub use image::RgbaImage;
+pub use rhai;
