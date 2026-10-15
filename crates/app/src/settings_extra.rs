@@ -47,6 +47,12 @@ impl App {
             *changed |= ui
                 .checkbox(&mut self.settings.post.show_panel, tr(lang, "set.post_show"))
                 .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.post.review_findings, tr(lang, "set.post_review"))
+                .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.post.restore_window, tr(lang, "set.post_restore"))
+                .changed();
 
             ui.horizontal(|ui| {
                 ui.label(tr(lang, "post.preset"));
@@ -541,11 +547,15 @@ fn otool_key(t: snapforge_core::settings::OverlayTool) -> &'static str {
         T::Step => "otool.step",
         T::Blur => "otool.blur",
         T::Pixelate => "otool.pixelate",
+        T::Select => "otool.select",
+        T::Spotlight => "otool.spotlight",
+        T::Eraser => "otool.eraser",
+        T::Picker => "otool.picker",
     }
 }
 
 /// Keys the overlay itself uses; tools cannot take them.
-const RESERVED_KEYS: [u32; 7] = [0x1B, 0x0D, 0x08, 0x25, 0x26, 0x27, 0x28];
+const RESERVED_KEYS: [u32; 8] = [0x1B, 0x0D, 0x08, 0x2E, 0x25, 0x26, 0x27, 0x28];
 
 impl App {
     /// "Video recording": frame rate and cursor.
@@ -572,7 +582,7 @@ impl App {
     /// "Capture overlay": the tool the overlay starts with, privacy and one configurable key per tool.
     pub fn overlay_card(&mut self, ui: &mut Ui, changed: &mut bool) {
         use snapforge_core::hotkey::{key_label, parse_single_key, poll_pressed_combo};
-        use snapforge_core::settings::{OverlayTool, default_overlay_keys};
+        use snapforge_core::settings::{OverlayClick, OverlayTool, ToolbarPos, default_overlay_keys};
         let lang = self.settings.language;
         if self.overlay_key_text.len() != OverlayTool::ALL.len() {
             self.overlay_key_text = OverlayTool::ALL
@@ -609,6 +619,110 @@ impl App {
             *changed |= ui
                 .checkbox(&mut self.settings.overlay_for_screens, tr(lang, "set.overlay_screens"))
                 .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_fill, tr(lang, "set.ov_fill"))
+                .changed();
+            *changed |= ui
+                .checkbox(&mut self.settings.overlay_magnifier, tr(lang, "set.ov_magnifier"))
+                .changed();
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "set.ov_click"));
+                let click_key = |c: OverlayClick| match c {
+                    OverlayClick::Monitor => "set.ov_click_monitor",
+                    OverlayClick::AllScreens => "set.ov_click_all",
+                    OverlayClick::Window => "set.ov_click_window",
+                    OverlayClick::Nothing => "set.ov_click_nothing",
+                };
+                egui::ComboBox::from_id_salt("overlay_click")
+                    .selected_text(tr(lang, click_key(self.settings.overlay_click)))
+                    .show_ui(ui, |ui| {
+                        for c in [
+                            OverlayClick::Monitor,
+                            OverlayClick::AllScreens,
+                            OverlayClick::Window,
+                            OverlayClick::Nothing,
+                        ] {
+                            *changed |= ui
+                                .selectable_value(&mut self.settings.overlay_click, c, tr(lang, click_key(c)))
+                                .changed();
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr(lang, "set.ov_toolbar"));
+                *changed |= ui
+                    .selectable_value(
+                        &mut self.settings.overlay_toolbar,
+                        ToolbarPos::Top,
+                        tr(lang, "set.ov_top"),
+                    )
+                    .changed();
+                *changed |= ui
+                    .selectable_value(
+                        &mut self.settings.overlay_toolbar,
+                        ToolbarPos::Bottom,
+                        tr(lang, "set.ov_bottom"),
+                    )
+                    .changed();
+            });
+            let mut dim = self.settings.overlay_dim as u32;
+            if ui
+                .add(
+                    egui::Slider::new(&mut dim, 0..=90)
+                        .suffix(" %")
+                        .text(tr(lang, "set.ov_dim")),
+                )
+                .changed()
+            {
+                self.settings.overlay_dim = dim as u8;
+                *changed = true;
+            }
+            ui.separator();
+            ui.label(tr(lang, "set.ov_palette"));
+            ui.horizontal_wrapped(|ui| {
+                let mut remove = None;
+                let many = self.settings.overlay_palette.len() > 1;
+                for (i, c) in self.settings.overlay_palette.iter_mut().enumerate() {
+                    let mut rgb = [c[0], c[1], c[2]];
+                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                        *c = [rgb[0], rgb[1], rgb[2], 255];
+                        *changed = true;
+                    }
+                    if many && ui.small_button("×").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.add_space(6.0);
+                }
+                if let Some(i) = remove {
+                    self.settings.overlay_palette.remove(i);
+                    *changed = true;
+                }
+                if self.settings.overlay_palette.len() < 10 && ui.button(tr(lang, "set.ov_palette_add")).clicked() {
+                    self.settings.overlay_palette.push([128, 128, 128, 255]);
+                    *changed = true;
+                }
+                if ui.button(tr(lang, "set.ov_palette_reset")).clicked() {
+                    self.settings.overlay_palette = snapforge_core::settings::default_overlay_palette();
+                    *changed = true;
+                }
+            });
+            ui.separator();
+            ui.label(tr(lang, "set.ov_tools"));
+            ui.horizontal_wrapped(|ui| {
+                for t in OverlayTool::ALL {
+                    let mut shown = !self.settings.overlay_hidden_tools.contains(&t);
+                    if ui.checkbox(&mut shown, tr(lang, otool_key(t))).changed() {
+                        if shown {
+                            self.settings.overlay_hidden_tools.retain(|x| *x != t);
+                        } else {
+                            self.settings.overlay_hidden_tools.push(t);
+                        }
+                        // the settings keep at least one capture tool on the bar
+                        self.settings.sanitize();
+                        *changed = true;
+                    }
+                }
+            });
             ui.separator();
             ui.label(tr(lang, "set.overlay_keys"));
 

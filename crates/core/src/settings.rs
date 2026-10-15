@@ -38,14 +38,23 @@ pub enum OverlayTool {
     Step,
     Blur,
     Pixelate,
+    /// Pick a drawn object to move it, resize it with the handles, recolour it or delete it.
+    Select,
+    /// Dims everything outside the dragged rectangle.
+    Spotlight,
+    /// Wipes the drawn objects the cursor passes over.
+    Eraser,
+    /// Takes the drawing colour from a pixel of the screen.
+    Picker,
 }
 
 impl OverlayTool {
-    pub const ALL: [OverlayTool; 14] = [
+    pub const ALL: [OverlayTool; 18] = [
         OverlayTool::Region,
         OverlayTool::Window,
         OverlayTool::Screen,
         OverlayTool::Ocr,
+        OverlayTool::Select,
         OverlayTool::Rect,
         OverlayTool::Ellipse,
         OverlayTool::Line,
@@ -56,6 +65,9 @@ impl OverlayTool {
         OverlayTool::Step,
         OverlayTool::Blur,
         OverlayTool::Pixelate,
+        OverlayTool::Spotlight,
+        OverlayTool::Eraser,
+        OverlayTool::Picker,
     ];
 
     pub fn default_key(self) -> &'static str {
@@ -74,6 +86,10 @@ impl OverlayTool {
             OverlayTool::Step => "N",
             OverlayTool::Blur => "B",
             OverlayTool::Pixelate => "X",
+            OverlayTool::Select => "V",
+            OverlayTool::Spotlight => "H",
+            OverlayTool::Eraser => "D",
+            OverlayTool::Picker => "I",
         }
     }
 
@@ -84,6 +100,41 @@ impl OverlayTool {
             OverlayTool::Region | OverlayTool::Window | OverlayTool::Screen | OverlayTool::Ocr
         )
     }
+}
+
+/// What a single click (no drag) does with the area or window tool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayClick {
+    /// Captures the whole monitor under the cursor.
+    #[default]
+    Monitor,
+    /// Captures all monitors together.
+    AllScreens,
+    /// Captures the window under the cursor (the monitor when there is none).
+    Window,
+    /// A click does nothing: only a drag selects.
+    Nothing,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolbarPos {
+    #[default]
+    Top,
+    Bottom,
+}
+
+/// The colours offered in the overlay's toolbar.
+pub fn default_overlay_palette() -> Vec<[u8; 4]> {
+    vec![
+        [230, 40, 40, 255],
+        [250, 190, 40, 255],
+        [60, 190, 90, 255],
+        [60, 140, 250, 255],
+        [255, 255, 255, 255],
+        [20, 20, 20, 255],
+    ]
 }
 
 pub fn default_overlay_keys() -> Vec<(OverlayTool, String)> {
@@ -142,6 +193,18 @@ pub struct Settings {
     pub overlay_privacy: bool,
     /// Full-screen and monitor captures also open the overlay with its toolbar (draw, blur, hide faces first).
     pub overlay_for_screens: bool,
+    /// Tools left out of the overlay's toolbar (their keys still work).
+    pub overlay_hidden_tools: Vec<OverlayTool>,
+    /// Colours of the toolbar (1 to 10).
+    pub overlay_palette: Vec<[u8; 4]>,
+    /// New rectangles and ellipses are filled.
+    pub overlay_fill: bool,
+    pub overlay_click: OverlayClick,
+    pub overlay_toolbar: ToolbarPos,
+    /// How much the not-selected part of the screen is darkened (0 to 90 %).
+    pub overlay_dim: u8,
+    /// The magnifier with the pixel colour next to the cursor.
+    pub overlay_magnifier: bool,
     /// Screen recording: frames per second (15, 24, 30 or 60) and whether the mouse cursor is drawn into the video.
     pub video_fps: u32,
     pub video_cursor: bool,
@@ -174,6 +237,13 @@ impl Default for Settings {
             overlay_width: 4.0,
             overlay_privacy: false,
             overlay_for_screens: true,
+            overlay_hidden_tools: Vec::new(),
+            overlay_palette: default_overlay_palette(),
+            overlay_fill: false,
+            overlay_click: OverlayClick::Monitor,
+            overlay_toolbar: ToolbarPos::Top,
+            overlay_dim: 60,
+            overlay_magnifier: true,
             video_fps: 30,
             video_cursor: true,
         }
@@ -216,6 +286,23 @@ impl Settings {
         self.delay_ms = self.delay_ms.min(60_000);
         self.post.sanitize();
         self.overlay_width = self.overlay_width.clamp(1.0, 24.0);
+        self.overlay_dim = self.overlay_dim.min(90);
+        self.overlay_palette.truncate(10);
+        if self.overlay_palette.is_empty() {
+            self.overlay_palette = default_overlay_palette();
+        }
+        for c in &mut self.overlay_palette {
+            c[3] = 255;
+        }
+        self.overlay_hidden_tools.dedup();
+        // at least one capture tool must stay on the bar, or the overlay cannot be used with the mouse
+        if OverlayTool::ALL
+            .iter()
+            .filter(|t| t.is_capture())
+            .all(|t| self.overlay_hidden_tools.contains(t))
+        {
+            self.overlay_hidden_tools.retain(|t| !t.is_capture());
+        }
         // every tool has an entry; unknown key names fall back to the default and duplicates are dropped
         let mut keys: Vec<(OverlayTool, String)> = Vec::new();
         for t in OverlayTool::ALL {
@@ -353,6 +440,26 @@ mod tests {
         assert_eq!(key(OverlayTool::Blur), "");
         assert_eq!(key(OverlayTool::Region), "S", "missing tools get their default");
         assert_eq!(s.overlay_keys.len(), OverlayTool::ALL.len());
+    }
+
+    #[test]
+    fn overlay_options_are_kept_in_range() {
+        let mut s = Settings::default();
+        assert_eq!(s.overlay_click, OverlayClick::Monitor);
+        s.overlay_dim = 200;
+        s.overlay_palette = Vec::new();
+        s.overlay_hidden_tools = OverlayTool::ALL.iter().copied().filter(|t| t.is_capture()).collect();
+        s.sanitize();
+        assert_eq!(s.overlay_dim, 90);
+        assert_eq!(s.overlay_palette, default_overlay_palette());
+        assert!(
+            s.overlay_hidden_tools.is_empty(),
+            "the capture tools cannot all be hidden"
+        );
+        s.overlay_palette = vec![[1, 2, 3, 0]; 30];
+        s.sanitize();
+        assert_eq!(s.overlay_palette.len(), 10);
+        assert_eq!(s.overlay_palette[0][3], 255);
     }
 
     #[test]

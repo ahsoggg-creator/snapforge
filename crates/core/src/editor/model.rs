@@ -286,6 +286,99 @@ impl Shape {
         }
     }
 
+    /// Handles for reshaping the shape with the mouse: the two ends of a line or arrow, for everything else the eight
+    /// points of its box (corners TL, TR, BR, BL, then the middle of the top, right, bottom and left side). A
+    /// numbered marker has none (its size follows the stroke width).
+    pub fn edit_handles(&self) -> Vec<Pt> {
+        match self {
+            Shape::Line { a, b } | Shape::Arrow { a, b } => vec![*a, *b],
+            Shape::Step { .. } => Vec::new(),
+            _ => {
+                let (lo, hi) = self.bounds(0.0);
+                let (mx, my) = ((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
+                vec![
+                    lo,
+                    Pt::new(hi.x, lo.y),
+                    hi,
+                    Pt::new(lo.x, hi.y),
+                    Pt::new(mx, lo.y),
+                    Pt::new(hi.x, my),
+                    Pt::new(mx, hi.y),
+                    Pt::new(lo.x, my),
+                ]
+            }
+        }
+    }
+
+    /// The shape with its handle `i` (an index into `edit_handles`) dragged to `to`. Works from the shape as it was
+    /// when the drag began, so dragging past the opposite side mirrors the shape instead of tangling the handles.
+    pub fn resized(&self, i: usize, to: Pt) -> Shape {
+        let mut out = self.clone();
+        match &mut out {
+            Shape::Line { a, b } | Shape::Arrow { a, b } => {
+                if i == 0 {
+                    *a = to;
+                } else {
+                    *b = to;
+                }
+                return out;
+            }
+            Shape::Step { .. } => return out,
+            _ => {}
+        }
+        let (lo, hi) = self.bounds(0.0);
+        let (mut nlo, mut nhi) = (lo, hi);
+        match i {
+            0 => nlo = to,
+            1 => {
+                nhi.x = to.x;
+                nlo.y = to.y;
+            }
+            2 => nhi = to,
+            3 => {
+                nlo.x = to.x;
+                nhi.y = to.y;
+            }
+            4 => nlo.y = to.y,
+            5 => nhi.x = to.x,
+            6 => nhi.y = to.y,
+            _ => nlo.x = to.x,
+        }
+        let (w, h) = (hi.x - lo.x, hi.y - lo.y);
+        let sx = if w > 1e-3 { (nhi.x - nlo.x) / w } else { 1.0 };
+        let sy = if h > 1e-3 { (nhi.y - nlo.y) / h } else { 1.0 };
+        if let Shape::Text { at, size, .. } = &mut out {
+            // the text keeps its proportions: the size follows the side that was dragged, the opposite one stays put
+            let s = match i {
+                4 | 6 => sy.abs(),
+                5 | 7 => sx.abs(),
+                _ => sx.abs().max(sy.abs()),
+            }
+            .clamp(0.1, 20.0);
+            let (nw, nh) = (w * s, h * s);
+            let left = matches!(i, 0 | 3 | 7);
+            let top = matches!(i, 0 | 1 | 4);
+            *at = Pt::new(if left { hi.x - nw } else { lo.x }, if top { hi.y - nh } else { lo.y });
+            *size = (*size * s).clamp(6.0, 400.0);
+            return out;
+        }
+        out.map_points(|p| {
+            Pt::new(
+                if w > 1e-3 {
+                    nlo.x + (p.x - lo.x) * sx
+                } else {
+                    p.x + nlo.x - lo.x
+                },
+                if h > 1e-3 {
+                    nlo.y + (p.y - lo.y) * sy
+                } else {
+                    p.y + nlo.y - lo.y
+                },
+            )
+        });
+        out
+    }
+
     /// Moves handle `i` (index into `handles()`) to `to`.
     pub fn move_handle(&mut self, i: usize, to: Pt) {
         match self {
@@ -520,6 +613,11 @@ impl Editor {
     /// Forgets the last checkpoint (the gesture it was taken for produced no change).
     pub fn cancel_checkpoint(&mut self) {
         self.undo.pop();
+    }
+
+    /// Number of steps `undo` can go back.
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -901,6 +999,80 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!((lo.x, lo.y, hi.x, hi.y), (10.0, 10.0, 80.0, 90.0));
+    }
+
+    #[test]
+    fn every_shape_but_the_step_can_be_reshaped_from_its_handles() {
+        let rect = Shape::Rect {
+            a: Pt::new(10.0, 10.0),
+            b: Pt::new(50.0, 30.0),
+            fill: false,
+        };
+        assert_eq!(rect.edit_handles().len(), 8);
+        // the right-hand middle handle stretches only the width
+        let Shape::Rect { a, b, .. } = rect.resized(5, Pt::new(90.0, 99.0)) else {
+            panic!()
+        };
+        assert_eq!((a.x, a.y, b.x, b.y), (10.0, 10.0, 90.0, 30.0));
+        // dragging a corner past the opposite one mirrors the box
+        let Shape::Rect { a, b, .. } = rect.resized(0, Pt::new(70.0, 50.0)) else {
+            panic!()
+        };
+        let (lo, hi) = norm_rect(a, b);
+        assert_eq!((lo.x, lo.y, hi.x, hi.y), (50.0, 30.0, 70.0, 50.0));
+
+        let line = Shape::Arrow {
+            a: Pt::new(0.0, 0.0),
+            b: Pt::new(5.0, 5.0),
+        };
+        assert_eq!(line.edit_handles().len(), 2);
+        let Shape::Arrow { a, b } = line.resized(1, Pt::new(9.0, 2.0)) else {
+            panic!()
+        };
+        assert_eq!((a.x, b.x, b.y), (0.0, 9.0, 2.0));
+
+        let pencil = Shape::Pencil {
+            pts: vec![Pt::new(0.0, 0.0), Pt::new(10.0, 10.0), Pt::new(20.0, 0.0)],
+        };
+        let Shape::Pencil { pts } = pencil.resized(2, Pt::new(40.0, 20.0)) else {
+            panic!()
+        };
+        assert_eq!((pts[1].x, pts[1].y, pts[2].x), (20.0, 20.0, 40.0));
+
+        let step = Shape::Step {
+            at: Pt::new(3.0, 3.0),
+            n: 1,
+        };
+        assert!(step.edit_handles().is_empty());
+        assert_eq!(step.resized(0, Pt::new(9.0, 9.0)), step);
+    }
+
+    #[test]
+    fn dragging_a_text_corner_scales_it_around_the_opposite_corner() {
+        let t = Shape::Text {
+            at: Pt::new(100.0, 100.0),
+            text: "Hello".into(),
+            size: 20.0,
+        };
+        let (lo, hi) = t.bounds(0.0);
+        // bottom-right corner moved to twice the distance from the top-left one
+        let to = Pt::new(lo.x + (hi.x - lo.x) * 2.0, lo.y + (hi.y - lo.y) * 2.0);
+        let Shape::Text { at, size, .. } = t.resized(2, to) else {
+            panic!()
+        };
+        assert_eq!((at.x, at.y), (100.0, 100.0));
+        assert!((size - 40.0).abs() < 0.01, "{size}");
+        // from the top-left corner the bottom-right one stays where it was
+        let Shape::Text { at, size, text } = t.resized(0, Pt::new(lo.x - (hi.x - lo.x), lo.y - (hi.y - lo.y))) else {
+            panic!()
+        };
+        assert!((size - 40.0).abs() < 0.01);
+        let grown = Shape::Text { at, size, text };
+        let (_, hi2) = grown.bounds(0.0);
+        assert!(
+            (hi2.x - hi.x).abs() < 1.5 && (hi2.y - hi.y).abs() < 1.5,
+            "{hi2:?} vs {hi:?}"
+        );
     }
 
     #[test]

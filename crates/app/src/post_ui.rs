@@ -193,7 +193,8 @@ impl App {
             // no panel: run the preset right away. The window comes up only when something needs the user (the
             // review of found faces, an error, the editor) or when it was open before the capture
             self.post_run(ctx);
-            if self.restore_window {
+            // the window stays away unless the user asked for it back (or there is no tray icon to find it by)
+            if self.restore_window && (self.settings.post.restore_window || self.tray.is_none()) {
                 self.show_window(ctx);
             }
         }
@@ -291,15 +292,22 @@ impl App {
 
     /// Polls the background jobs of the pending shot.
     pub fn post_poll(&mut self, ctx: &egui::Context) {
+        let review_wanted = self.settings.post.review_findings;
         let Some(p) = &mut self.pending else { return };
         if let Some(rx) = &p.analysis_rx
             && let Ok(f) = rx.try_recv()
         {
             p.faces_ok = vec![true; f.faces.len()];
             p.sens_ok = vec![true; f.sensitive.len()];
+            // The review screen needs the user, so it brings the window up: only for what a person has to decide.
+            // Nothing found means nothing to review, and with the review switched off everything found is hidden
+            // at once. A feature that could not run (no model, no OCR language) is always shown, never skipped.
+            let hides = p.preset.blur_faces || p.preset.hide_sensitive;
+            let nothing_found = f.faces.is_empty() && f.sensitive.is_empty();
+            let review = hides && (!f.errors.is_empty() || (review_wanted && !nothing_found));
             p.findings = Some(f);
             p.analysis_rx = None;
-            if p.preset.blur_faces || p.preset.hide_sensitive {
+            if review {
                 p.stage = Stage::Review;
                 self.show_window(ctx);
             } else {

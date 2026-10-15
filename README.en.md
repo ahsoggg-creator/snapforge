@@ -20,7 +20,7 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
   the screenshot.
 - **No administrator rights.** Installation and normal use are per-user.
 
-## Features (0.6.0)
+## Features (0.7.0)
 
 - **Editor: more tools (0.6.0).** "Hide faces" and "Hide text" find faces and sensitive text by themselves and cover them with blur as separate layers (move or delete them); "Spotlight" (dims everything around the selection), "Eyedropper", flip horizontally and vertically, resize, "Frame..." (gradient background, padding, rounded corners, shadow). Tools switch with a single key (shown in the list).
 - **After a shot (0.6.0).** The home page picks what happens after a shot and can switch the panel off: the chosen preset then runs silently and no window appears (it comes forward only when your decision is needed, for example to review found faces, or on an error).
@@ -29,6 +29,7 @@ global hotkeys. Everything stays on your computer; the only thing the app contac
 - **Tray (0.5.0).** A left click opens the window, a right click the menu: open, settings, captures, video recording, quit.
 - **Updates (0.5.0).** A dropped download resumes (`Range`), with retries, a percentage and a "Retry" button; "Restart" no longer outruns the old copy closing.
 - **Capture overlay (0.4.0).** A top toolbar like ShareX: modes region, window, monitor under the cursor and "text from region (OCR) straight to the clipboard"; tools rectangle, ellipse, line, arrow, pencil, marker, text, numbered step, blur, pixelate; colour, thickness, undo and "hide sensitive data after capture". Everything drawn in the overlay arrives in the editor as separate editable objects. Tool keys are configurable (duplicates and reserved keys are rejected); global hotkeys can be recorded with any key, including PrintScreen and Win, and apply immediately; there is a "Reset to defaults" button.
+- **Capture overlay: editing what you drew.** Drawn objects can be moved and stretched by their handles (every shape, text and pencil strokes), recoloured, re-sized and deleted (Delete); new tools "Select" (V), "Eraser" (D), "Spotlight" (H), "Picker" (I), fill, "Redo" (Ctrl+Y); Shift keeps squares and 45° angles. A single click without dragging captures the whole screen (configurable: window, all monitors or nothing). The toolbar can be dragged, put at the bottom, trimmed to the tools you use, with your own colours, dimming level and magnifier on/off, all in Settings. After a capture: with the panel off the SnapForge window no longer comes back by itself, and the review of found faces and text is skipped when nothing was found or when switched off in Settings.
 - **Capture:** region (frozen frame, magnifier next to the cursor, pixel-exact selection, arrow keys nudge the
   cursor by 1 px, Shift: 10), window, full screen, a single monitor. Multiple monitors with different scaling: all
   coordinates are physical pixels of the virtual desktop and a region spanning monitors is stitched from pieces.
