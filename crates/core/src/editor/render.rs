@@ -8,10 +8,12 @@ use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use tiny_skia::{
-    Color as SkColor, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
+    BlendMode, Color as SkColor, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke,
+    Transform,
 };
 
 use super::model::{Color, Object, Pt, Shape, norm_rect, step_radius};
+use crate::geometry::Rect;
 
 static FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
@@ -279,10 +281,146 @@ pub fn beautify(base: &RgbaImage, o: &Beautify) -> RgbaImage {
 /// Renders `objects` (in order) over `base`.
 pub fn render(base: &RgbaImage, objects: &[Object]) -> RgbaImage {
     let mut pm = to_pixmap(base);
-    for o in objects.iter().filter(|o| o.visible) {
-        draw_object(&mut pm, o);
-    }
+    draw_objects(&mut pm, objects);
     from_pixmap(&pm)
+}
+
+fn draw_objects(pm: &mut Pixmap, objects: &[Object]) {
+    let any_eraser = objects
+        .iter()
+        .any(|o| o.visible && matches!(o.shape, Shape::Erase { .. }));
+    for (i, o) in objects.iter().enumerate().filter(|(_, o)| o.visible) {
+        match &o.shape {
+            Shape::Erase { .. } => {}
+            sh if any_eraser && sh.is_ink() => {
+                let erasers: Vec<&Object> = objects[i + 1..]
+                    .iter()
+                    .filter(|e| e.visible && matches!(e.shape, Shape::Erase { .. }))
+                    .collect();
+                if erasers.is_empty() {
+                    draw_object(pm, o);
+                } else {
+                    draw_erased(pm, o, &erasers);
+                }
+            }
+            _ => draw_object(pm, o),
+        }
+    }
+}
+
+/// Draws `o` on a transparent layer, wipes the eraser strokes that come after it out of that layer, and puts the
+/// layer on the picture, so the picture underneath is never erased.
+fn draw_erased(pm: &mut Pixmap, o: &Object, erasers: &[&Object]) {
+    let (lo, hi) = o.shape.bounds(o.width);
+    let m = (o.width * 4.0).max(16.0);
+    let (x0, y0) = ((lo.x - m).floor().max(0.0) as i32, (lo.y - m).floor().max(0.0) as i32);
+    let (x1, y1) = (
+        ((hi.x + m).ceil().max(0.0) as i32).min(pm.width() as i32),
+        ((hi.y + m).ceil().max(0.0) as i32).min(pm.height() as i32),
+    );
+    let Some(mut layer) = (x1 > x0 && y1 > y0)
+        .then(|| Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32))
+        .flatten()
+    else {
+        return;
+    };
+    let mut local = o.clone();
+    local.shape.translate(-(x0 as f32), -(y0 as f32));
+    draw_object(&mut layer, &local);
+    let wipe = Paint {
+        blend_mode: BlendMode::Clear,
+        anti_alias: true,
+        ..Paint::default()
+    };
+    for e in erasers {
+        let Shape::Erase { pts } = &e.shape else { continue };
+        let shifted: Vec<Pt> = pts.iter().map(|p| Pt::new(p.x - x0 as f32, p.y - y0 as f32)).collect();
+        if let Some(path) = smooth_path(&shifted) {
+            layer.stroke_path(
+                &path,
+                &wipe,
+                &stroke(e.width, LineCap::Round),
+                Transform::identity(),
+                None,
+            );
+        }
+    }
+    pm.draw_pixmap(
+        x0,
+        y0,
+        layer.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Renders only the part of the picture inside `area`, exactly as `render` would draw it there, and returns the area
+/// that was really rendered (it grows to take in whole blur, pixelate and chart regions, which read their
+/// surroundings) with its pixels. Moving an object only has to redraw the pixels it touched.
+pub fn render_region(base: &RgbaImage, objects: &[Object], area: Rect) -> Option<(Rect, RgbaImage)> {
+    let full = Rect::new(0, 0, base.width() as i32, base.height() as i32);
+    let mut r = area.intersect(&full)?;
+    let reads_below = |o: &&Object| {
+        o.visible
+            && matches!(
+                o.shape,
+                Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Chart { .. }
+            )
+    };
+    loop {
+        let mut grown = r;
+        for o in objects.iter().filter(reads_below) {
+            let (lo, hi) = o.shape.bounds(0.0);
+            let b = Rect::new(
+                lo.x.floor() as i32,
+                lo.y.floor() as i32,
+                (hi.x.ceil() - lo.x.floor()) as i32 + 1,
+                (hi.y.ceil() - lo.y.floor()) as i32 + 1,
+            );
+            if let Some(b) = b.intersect(&full)
+                && b.intersect(&r).is_some()
+            {
+                grown = grown.union(&b);
+            }
+        }
+        if grown == r {
+            break;
+        }
+        r = grown;
+    }
+    // most of the picture anyway: one pass over everything is cheaper than cutting it up
+    if r.area() * 10 >= full.area() * 6 {
+        return Some((full, render(base, objects)));
+    }
+    let crop = image::imageops::crop_imm(base, r.x as u32, r.y as u32, r.w as u32, r.h as u32).to_image();
+    let mut pm = to_pixmap(&crop);
+    let near: Vec<Object> = objects
+        .iter()
+        .filter(|o| o.visible)
+        .filter(|o| {
+            if matches!(o.shape, Shape::Spotlight { .. }) {
+                return true;
+            }
+            let (lo, hi) = o.shape.bounds(o.width);
+            let m = (o.width * 8.0).max(40.0);
+            Rect::new(
+                (lo.x - m).floor() as i32,
+                (lo.y - m).floor() as i32,
+                (hi.x - lo.x + 2.0 * m) as i32 + 2,
+                (hi.y - lo.y + 2.0 * m) as i32 + 2,
+            )
+            .intersect(&r)
+            .is_some()
+        })
+        .map(|o| {
+            let mut c = o.clone();
+            c.shape.translate(-(r.x as f32), -(r.y as f32));
+            c
+        })
+        .collect();
+    draw_objects(&mut pm, &near);
+    Some((r, from_pixmap(&pm)))
 }
 
 fn smooth_path(pts: &[Pt]) -> Option<tiny_skia::Path> {
@@ -350,6 +488,7 @@ fn draw_object(pm: &mut Pixmap, o: &Object) {
                 pm.stroke_path(&p, &paint(c), &stroke(o.width * 5.0, LineCap::Butt), id, None);
             }
         }
+        Shape::Erase { .. } => {}
         Shape::Text { at, text, size } => draw_text(pm, text, *at, *size, o.color),
         Shape::Blur { a, b, radius } => {
             let (lo, hi) = norm_rect(*a, *b);
@@ -827,5 +966,181 @@ mod tests {
         let v = dst.get_pixel(3, 3).0[0];
         assert!((120..=135).contains(&v), "{v}");
         assert_eq!(dst.get_pixel(8, 8).0[0], 255);
+    }
+    fn filled(a: (f32, f32), b: (f32, f32), color: Color) -> Object {
+        obj(
+            Shape::Rect {
+                a: Pt::new(a.0, a.1),
+                b: Pt::new(b.0, b.1),
+                fill: true,
+            },
+            color,
+            2.0,
+        )
+    }
+
+    fn stroke_of(pts: &[(f32, f32)], width: f32) -> Object {
+        obj(
+            Shape::Erase {
+                pts: pts.iter().map(|p| Pt::new(p.0, p.1)).collect(),
+            },
+            [0, 0, 0, 255],
+            width,
+        )
+    }
+
+    #[test]
+    fn the_eraser_wipes_drawn_marks_but_never_the_picture() {
+        let base = RgbaImage::from_pixel(60, 40, Rgba([200, 220, 240, 255]));
+        let red = [255, 0, 0, 255];
+        let out = render(
+            &base,
+            &[
+                filled((5.0, 5.0), (55.0, 35.0), red),
+                stroke_of(&[(10.0, 20.0), (50.0, 20.0)], 10.0),
+            ],
+        );
+        assert_eq!(
+            out.get_pixel(30, 20).0,
+            [200, 220, 240, 255],
+            "the stroke shows the picture, not black or white"
+        );
+        assert_eq!(out.get_pixel(30, 8).0, red, "outside the stroke the mark stays");
+        assert_eq!(out.get_pixel(30, 32).0, red);
+        assert_eq!(out.get_pixel(1, 1).0, [200, 220, 240, 255], "the picture is untouched");
+    }
+
+    #[test]
+    fn the_eraser_only_reaches_what_was_drawn_before_it() {
+        let base = white(60, 40);
+        let out = render(
+            &base,
+            &[
+                stroke_of(&[(10.0, 20.0), (50.0, 20.0)], 12.0),
+                filled((5.0, 5.0), (55.0, 35.0), [0, 0, 255, 255]),
+            ],
+        );
+        assert_eq!(
+            out.get_pixel(30, 20).0,
+            [0, 0, 255, 255],
+            "a later mark covers the old stroke"
+        );
+        let hidden = Object {
+            visible: false,
+            ..stroke_of(&[(10.0, 20.0), (50.0, 20.0)], 12.0)
+        };
+        let out = render(&base, &[filled((5.0, 5.0), (55.0, 35.0), [0, 0, 255, 255]), hidden]);
+        assert_eq!(
+            out.get_pixel(30, 20).0,
+            [0, 0, 255, 255],
+            "a hidden stroke erases nothing"
+        );
+    }
+
+    #[test]
+    fn the_eraser_leaves_blur_and_pixelate_alone() {
+        let base = RgbaImage::from_fn(60, 40, |x, y| {
+            if (x / 2 + y / 2) % 2 == 0 {
+                Rgba([0, 0, 0, 255])
+            } else {
+                Rgba([255, 255, 255, 255])
+            }
+        });
+        let pix = obj(
+            Shape::Pixelate {
+                a: Pt::new(10.0, 10.0),
+                b: Pt::new(50.0, 30.0),
+                block: 20,
+            },
+            [0, 0, 0, 255],
+            1.0,
+        );
+        let with = render(&base, &[pix.clone(), stroke_of(&[(10.0, 20.0), (50.0, 20.0)], 14.0)]);
+        let without = render(&base, &[pix]);
+        assert_eq!(with, without, "pixelate hides what is under it for good");
+    }
+
+    #[test]
+    fn a_region_render_matches_the_full_render() {
+        let base = RgbaImage::from_fn(200, 120, |x, y| {
+            Rgba([(x * 3) as u8, (y * 5) as u8, ((x + y) * 2) as u8, 255])
+        });
+        let objects = vec![
+            filled((20.0, 20.0), (120.0, 80.0), [255, 0, 0, 255]),
+            obj(
+                Shape::Blur {
+                    a: Pt::new(90.0, 40.0),
+                    b: Pt::new(160.0, 100.0),
+                    radius: 6,
+                },
+                [0, 0, 0, 255],
+                1.0,
+            ),
+            obj(
+                Shape::Pixelate {
+                    a: Pt::new(10.0, 70.0),
+                    b: Pt::new(60.0, 110.0),
+                    block: 7,
+                },
+                [0, 0, 0, 255],
+                1.0,
+            ),
+            obj(
+                Shape::Marker {
+                    pts: vec![Pt::new(30.0, 30.0), Pt::new(100.0, 50.0), Pt::new(140.0, 30.0)],
+                },
+                [255, 220, 0, 255],
+                4.0,
+            ),
+            obj(
+                Shape::Arrow {
+                    a: Pt::new(15.0, 100.0),
+                    b: Pt::new(95.0, 60.5),
+                },
+                [0, 255, 0, 255],
+                5.0,
+            ),
+            stroke_of(&[(40.0, 60.0), (80.0, 70.0), (110.0, 45.0)], 14.0),
+            obj(
+                Shape::Spotlight {
+                    a: Pt::new(5.0, 5.0),
+                    b: Pt::new(190.0, 110.0),
+                },
+                [0, 0, 0, 255],
+                1.0,
+            ),
+        ];
+        let full = render(&base, &objects);
+        for area in [
+            Rect::new(25, 25, 40, 30),
+            Rect::new(100, 50, 30, 30),
+            Rect::new(0, 0, 30, 30),
+            Rect::new(150, 80, 80, 80),
+        ] {
+            let (got, img) = render_region(&base, &objects, area).expect("inside the picture");
+            assert_eq!(img.dimensions(), (got.w as u32, got.h as u32));
+            assert!(got.intersect(&area).is_some_and(|i| i.w > 0));
+            // the same shapes, drawn from slightly different float coordinates: a handful of anti-aliased edge pixels
+            // may flip a sub-pixel sample, everything else is identical
+            let mut off = 0;
+            for y in 0..got.h {
+                for x in 0..got.w {
+                    let (a, b) = (
+                        img.get_pixel(x as u32, y as u32).0,
+                        full.get_pixel((got.x + x) as u32, (got.y + y) as u32).0,
+                    );
+                    let worst = a.iter().zip(b).map(|(p, q)| p.abs_diff(q)).max().unwrap();
+                    assert!(
+                        worst <= 64,
+                        "pixel ({}, {}) of {area:?} -> {got:?}: {a:?} vs {b:?}",
+                        got.x + x,
+                        got.y + y
+                    );
+                    off += usize::from(worst > 2);
+                }
+            }
+            assert!(off <= 4, "{off} edge pixels differ in {area:?}");
+        }
+        assert!(render_region(&base, &objects, Rect::new(500, 500, 10, 10)).is_none());
     }
 }

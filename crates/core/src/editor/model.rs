@@ -56,6 +56,11 @@ pub enum Shape {
     Marker {
         pts: Vec<Pt>,
     },
+    /// An eraser stroke (the object's width is the brush diameter): wipes what the drawn marks beneath it show
+    /// inside the stroke. The picture itself and the blur, pixelate, spotlight and chart effects stay untouched.
+    Erase {
+        pts: Vec<Pt>,
+    },
     Blur {
         a: Pt,
         b: Pt,
@@ -128,12 +133,25 @@ impl Shape {
             Shape::Text { .. } => "text",
             Shape::Pencil { .. } => "pencil",
             Shape::Marker { .. } => "marker",
+            Shape::Erase { .. } => "erase",
             Shape::Blur { .. } => "blur",
             Shape::Pixelate { .. } => "pixelate",
             Shape::Step { .. } => "step",
             Shape::Chart { .. } => "chart",
             Shape::Spotlight { .. } => "spotlight",
         }
+    }
+
+    /// Marks the eraser can wipe: everything drawn, but not the effects that work on the picture below.
+    pub fn is_ink(&self) -> bool {
+        !matches!(
+            self,
+            Shape::Blur { .. }
+                | Shape::Pixelate { .. }
+                | Shape::Spotlight { .. }
+                | Shape::Chart { .. }
+                | Shape::Erase { .. }
+        )
     }
 
     /// Scales every length of the shape by `f` (the picture was resized): widths are handled by the caller.
@@ -157,7 +175,7 @@ impl Shape {
             | Shape::Spotlight { a, b }
             | Shape::Pixelate { a, b, .. } => vec![a, b],
             Shape::Text { at, .. } | Shape::Step { at, .. } => vec![at],
-            Shape::Pencil { pts } | Shape::Marker { pts } => pts.iter_mut().collect(),
+            Shape::Pencil { pts } | Shape::Marker { pts } | Shape::Erase { pts } => pts.iter_mut().collect(),
         }
     }
 
@@ -193,7 +211,7 @@ impl Shape {
                 let r = step_radius(width);
                 return (Pt::new(at.x - r, at.y - r), Pt::new(at.x + r, at.y + r));
             }
-            Shape::Pencil { pts } | Shape::Marker { pts } => {
+            Shape::Pencil { pts } | Shape::Marker { pts } | Shape::Erase { pts } => {
                 let mut lo = Pt::new(f32::MAX, f32::MAX);
                 let mut hi = Pt::new(f32::MIN, f32::MIN);
                 for p in pts {
@@ -219,6 +237,8 @@ impl Shape {
     pub fn hit(&self, p: Pt, width: f32, tol: f32) -> bool {
         let reach = width / 2.0 + tol;
         match self {
+            // an eraser stroke is not an object to pick up: undo or the layer list take it back
+            Shape::Erase { .. } => false,
             Shape::Line { a, b } | Shape::Arrow { a, b } => dist_to_segment(p, *a, *b) <= reach.max(tol + 2.0),
             Shape::Rect { a, b, fill } => {
                 let (lo, hi) = norm_rect(*a, *b);
@@ -292,7 +312,7 @@ impl Shape {
     pub fn edit_handles(&self) -> Vec<Pt> {
         match self {
             Shape::Line { a, b } | Shape::Arrow { a, b } => vec![*a, *b],
-            Shape::Step { .. } => Vec::new(),
+            Shape::Step { .. } | Shape::Erase { .. } => Vec::new(),
             _ => {
                 let (lo, hi) = self.bounds(0.0);
                 let (mx, my) = ((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
@@ -323,7 +343,7 @@ impl Shape {
                 }
                 return out;
             }
-            Shape::Step { .. } => return out,
+            Shape::Step { .. } | Shape::Erase { .. } => return out,
             _ => {}
         }
         let (lo, hi) = self.bounds(0.0);
@@ -581,6 +601,24 @@ impl Document {
     /// Flattens the document: base + all objects.
     pub fn render(&self) -> RgbaImage {
         render::render(&self.base, &self.objects)
+    }
+
+    /// Does the eraser stroke `id` pass over anything drawn? (A stroke over nothing is worth dropping.)
+    pub fn touches_ink(&self, id: u64) -> bool {
+        let Some(e) = self.get(id) else { return false };
+        let (lo, hi) = e.shape.bounds(e.width);
+        self.objects.iter().any(|x| {
+            if x.id == id || !x.visible || !x.shape.is_ink() {
+                return false;
+            }
+            let (a, b) = x.shape.bounds(x.width);
+            a.x <= hi.x && b.x >= lo.x && a.y <= hi.y && b.y >= lo.y
+        })
+    }
+
+    /// Like `render`, for the part of the picture inside `area` only: the area really rendered and its pixels.
+    pub fn render_region(&self, area: Rect) -> Option<(Rect, RgbaImage)> {
+        render::render_region(&self.base, &self.objects, area)
     }
 }
 
